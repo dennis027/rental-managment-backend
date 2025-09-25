@@ -36,6 +36,18 @@ class RegisterSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
+class ResendActivationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        try:
+            user = User.objects.get(email=value)
+            if user.is_active:
+                raise serializers.ValidationError("This account is already activated.")
+            return value
+        except User.DoesNotExist:
+            raise serializers.ValidationError("No account found with this email address.")
+
 
 
 class LoginSerializer(serializers.Serializer):

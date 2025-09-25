@@ -13,13 +13,20 @@ from django.utils import timezone
 from datetime import timedelta
 import random
 import logging
+from rest_framework.permissions import IsAuthenticated 
+from django.template.loader import render_to_string
+from django.core.mail import EmailMultiAlternatives
+from django.utils.html import strip_tags
+from django.core.cache import cache
+
 
 from .serializers import (
     PasswordResetCodeCheckSerializer, 
     RegisterSerializer, 
     LoginSerializer,
     PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer
+    PasswordResetConfirmSerializer,
+    ResendActivationSerializer
 )
 from .utils import generate_activation_link, generate_password_reset_link
 from django.contrib.auth import get_user_model
@@ -48,16 +55,47 @@ class RegisterView(generics.CreateAPIView):
                 try:
                     activation_link = generate_activation_link(user, request)
                     
-                    subject = "Activate your RentSystem Account"
-                    message = f"Hi {user.username},\n\nClick the link below to activate your account:\n{activation_link}"
+                    # Render HTML email template
+                    html_content = render_to_string('emails/activation_email.html', {
+                        'user': user,
+                        'activation_link': activation_link,
+                        'site_name': 'RentSystem',
+                    })
                     
-                    send_mail(
-                        subject,
-                        message,
-                        None,  # uses DEFAULT_FROM_EMAIL
-                        [user.email],
-                        fail_silently=False,
+                    # Create plain text version
+                    text_content = strip_tags(html_content)
+                    
+                    # Alternative plain text message
+                    plain_text_message = f"""
+                    Hi {user.username},
+
+                    Welcome to RentSystem! 
+
+                    Please click the link below to activate your account:
+                    {activation_link}
+
+                    This activation link will expire in 24 hours for security reasons.
+
+                    If you didn't create this account, please ignore this email.
+
+                    Best regards,
+                    RentSystem Team
+
+                    ---
+                    This is an automated email, please do not reply directly to this message.
+                    """.strip()
+                    
+                    subject = "Activate your RentSystem Account"
+                    
+                    # Create email with both HTML and plain text versions
+                    email = EmailMultiAlternatives(
+                        subject=subject,
+                        body=plain_text_message,  # Plain text version
+                        from_email=None,  # uses DEFAULT_FROM_EMAIL
+                        to=[user.email],
                     )
+                    email.attach_alternative(html_content, "text/html")
+                    email.send(fail_silently=False)
                     
                     logger.info(f"Registration successful for user: {user.email}")
                     
@@ -124,12 +162,146 @@ class RegisterView(generics.CreateAPIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class ResendActivationWithRateLimitView(APIView):
+    """
+    Resend activation email with rate limiting to prevent abuse.
+    Limits: 3 requests per hour per email address.
+    """
+    
+    def post(self, request, *args, **kwargs):
+        serializer = ResendActivationSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response({
+                "success": False,
+                "error": "validation_error",
+                "message": "Invalid input data",
+                "details": serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        email = serializer.validated_data['email']
+        
+        # Rate limiting check
+        cache_key = f"resend_activation_{email.replace('@', '_at_').replace('.', '_dot_')}"
+        attempts = cache.get(cache_key, 0)
+        
+        if attempts >= 3:
+            return Response({
+                "success": False,
+                "error": "rate_limit_exceeded",
+                "message": "Too many requests. Please wait an hour before requesting another activation email."
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        
+        try:
+            user = User.objects.get(email=email)
+            
+            if user.is_active:
+                return Response({
+                    "success": False,
+                    "error": "already_activated",
+                    "message": "This account is already activated."
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                # Generate new activation link
+                activation_link = generate_activation_link(user, request)
+                
+                # Render HTML email template
+                html_content = render_to_string('emails/activation_email.html', {
+                    'user': user,
+                    'activation_link': activation_link,
+                    'site_name': 'RentSystem',
+                    'is_resend': True,
+                })
+                
+                # Plain text version
+                plain_text_message = f"""
+                    Hi {user.username},
+
+                    We received a request to resend your account activation email for RentSystem.
+
+                    Please click the link below to activate your account:
+                    {activation_link}
+
+                    This activation link will expire in 24 hours for security reasons.
+
+                    If you didn't request this email, please ignore this message.
+
+                    Best regards,
+                    RentSystem Team
+
+                    ---
+                    This is an automated email, please do not reply directly to this message.
+                """.strip()
+                
+                subject = "RentSystem - Account Activation (Resend)"
+                
+                # Send email
+                email_msg = EmailMultiAlternatives(
+                    subject=subject,
+                    body=plain_text_message,
+                    from_email=None,
+                    to=[user.email],
+                )
+                email_msg.attach_alternative(html_content, "text/html")
+                email_msg.send(fail_silently=False)
+                
+                # Update rate limiting counter
+                cache.set(cache_key, attempts + 1, timeout=3600)  # 1 hour timeout
+                
+                logger.info(f"Activation email resent successfully for user: {user.email} (attempt {attempts + 1})")
+                
+                return Response({
+                    "success": True,
+                    "message": "Activation email has been resent successfully. Please check your email.",
+                    "data": {
+                        "email": user.email,
+                        "username": user.username,
+                        "remaining_attempts": 2 - attempts
+                    }
+                }, status=status.HTTP_200_OK)
+                
+            except BadHeaderError:
+                logger.error(f"Bad email header when resending activation for user: {user.email}")
+                return Response({
+                    "success": False,
+                    "error": "email_error",
+                    "message": "Invalid email configuration. Please contact support."
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+            except Exception as email_error:
+                logger.error(f"Email sending failed when resending activation for user {user.email}: {str(email_error)}")
+                return Response({
+                    "success": False,
+                    "error": "email_send_failed",
+                    "message": "Failed to send activation email. Please try again later or contact support."
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        except User.DoesNotExist:
+            return Response({
+                "success": False,
+                "error": "user_not_found",
+                "message": "No account found with this email address."
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Exception as e:
+            logger.error(f"Unexpected error during activation email resend: {str(e)}")
+            return Response({
+                "success": False,
+                "error": "server_error",
+                "message": "An unexpected error occurred. Please try again later."
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
 class LoginView(generics.GenericAPIView):
     serializer_class = LoginSerializer
+    authentication_classes = []
 
     def post(self, request, *args, **kwargs):
         try:
             serializer = self.get_serializer(data=request.data)
+            print (request.data)
             
             if not serializer.is_valid():
                 return Response({
@@ -508,4 +680,46 @@ class PasswordResetConfirmView(generics.GenericAPIView):
                 "success": False,
                 "error": "server_error",
                 "message": "An unexpected error occurred during password reset."
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+
+
+
+class LogoutView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        try:
+            refresh_token = request.data.get("refresh")
+
+            if not refresh_token:
+                return Response({
+                    "success": False,
+                    "error": "missing_token",
+                    "message": "Refresh token is required for logout."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception as e:
+                print("Logout error:", str(e))  # 👈 log to console
+                return Response({
+                    "success": False,
+                    "error": "invalid_token",
+                    "message": "Token is invalid or already blacklisted."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({
+                "success": True,
+                "message": "Logout successful."
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print("Unexpected logout error:", str(e))  # 👈 log to console
+            return Response({
+                "success": False,
+                "error": "server_error",
+                "message": f"Unexpected error: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
