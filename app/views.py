@@ -18,6 +18,10 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
+from .models import Property, Unit
+from .serializers import PropertySerializer, UnitSerializer
+from rest_framework import viewsets
+
 
 
 from .serializers import (
@@ -683,9 +687,6 @@ class PasswordResetConfirmView(generics.GenericAPIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
 
-
-
-
 class LogoutView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
 
@@ -723,3 +724,115 @@ class LogoutView(generics.GenericAPIView):
                 "error": "server_error",
                 "message": f"Unexpected error: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# property and unit views would go here, but are omitted for brevity.
+
+
+
+# ----------------- Property APIs -----------------
+class PropertyListCreate(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        properties = Property.objects.all().order_by("-created_at")
+        serializer = PropertySerializer(properties, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = PropertySerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PropertyDetail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        property_obj = get_object_or_404(Property, pk=pk)
+        serializer = PropertySerializer(property_obj)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        """Full update (all fields required)"""
+        property_obj = get_object_or_404(Property, pk=pk)
+        serializer = PropertySerializer(property_obj, data=request.data)  # full update
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        """Partial update (only provided fields will be updated)"""
+        property_obj = get_object_or_404(Property, pk=pk)
+        serializer = PropertySerializer(property_obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        property_obj = get_object_or_404(Property, pk=pk)
+
+        # Use the correct related_name
+        if property_obj.units.exists():  # if related_name="units"
+            property_obj.is_active = False
+            property_obj.save()
+            return Response(
+                {"detail": "Property has related units, so it was disabled instead of deleted."},
+                status=status.HTTP_200_OK
+            )
+        else:
+            property_obj.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ----------------- Unit APIs -----------------
+class UnitListCreate(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        units = Unit.objects.select_related("property").all().order_by("-created_at")
+        serializer = UnitSerializer(units, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = UnitSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UnitDetail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        unit = get_object_or_404(Unit, pk=pk)
+        serializer = UnitSerializer(unit)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        """Full update (all fields required)"""
+        unit = get_object_or_404(Unit, pk=pk)
+        serializer = UnitSerializer(unit, data=request.data)  # full update
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        """Partial update (only provided fields will be updated)"""
+        unit = get_object_or_404(Unit, pk=pk)
+        serializer = UnitSerializer(unit, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        unit = get_object_or_404(Unit, pk=pk)
+        unit.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
+from .models import Property, Unit
+
 
 
 User = get_user_model()
@@ -48,8 +50,6 @@ class ResendActivationSerializer(serializers.Serializer):
         except User.DoesNotExist:
             raise serializers.ValidationError("No account found with this email address.")
 
-
-
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
@@ -84,7 +84,6 @@ class LoginSerializer(serializers.Serializer):
         data["user"] = user
         return data
     
-
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
@@ -104,7 +103,19 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         return attrs
     
-
 class PasswordResetCodeCheckSerializer(serializers.Serializer):
     email = serializers.EmailField()
     reset_code = serializers.CharField(max_length=6)
+
+class PropertySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Property
+        fields = "__all__"
+
+
+class UnitSerializer(serializers.ModelSerializer):
+    property_name = serializers.CharField(source="property.name", read_only=True)
+
+    class Meta:
+        model = Unit
+        fields = "__all__"
