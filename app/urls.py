@@ -1,24 +1,38 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, CustomerDetail, CustomerListCreate, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+
+from django.conf import settings
+from django.conf.urls.static import static
 
 urlpatterns = [
-    path("register/", RegisterView.as_view(), name="register"),  
-    path("login/", LoginView.as_view(), name="login"),
-    path('logout/', LogoutView.as_view(), name='logout'),
-    path("activate/<uidb64>/<token>/", ActivateAccountView.as_view(), name="activate"),
-    path('resend-activation-limited/', ResendActivationWithRateLimitView.as_view(), name='resend_activation_limited'),
-    path("reset-password/", PasswordResetRequestView.as_view(), name="reset-password"),
-    path("password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
-    path("password-reset/check-code/", PasswordResetCodeCheckView.as_view(), name="password-reset-check-code"),
+    path("api/register/", RegisterView.as_view(), name="register"),  
+    path("api/login/", LoginView.as_view(), name="login"),
+    path('api/logout/', LogoutView.as_view(), name='logout'),
+    path("api/activate/<uidb64>/<token>/", ActivateAccountView.as_view(), name="activate"),
+    path('api/resend-activation-limited/', ResendActivationWithRateLimitView.as_view(), name='resend_activation_limited'),
+    path("api/reset-password/", PasswordResetRequestView.as_view(), name="reset-password"),
+    path("api/password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
+    path("api/password-reset/check-code/", PasswordResetCodeCheckView.as_view(), name="password-reset-check-code"),
 
 
 
         # Property APIs
-    path("properties/", PropertyListCreate.as_view(), name="property-list-create"),
-    path("properties/<int:pk>/", PropertyDetail.as_view(), name="property-detail"),
+    path("api/properties/", PropertyListCreate.as_view(), name="property-list-create"),
+    path("api/properties/<int:pk>/", PropertyDetail.as_view(), name="property-detail"),
 
     # Unit APIs
-    path("units/", UnitListCreate.as_view(), name="unit-list-create"),
-    path("units/<int:pk>/", UnitDetail.as_view(), name="unit-detail"),
-]
+    path("api/units/", UnitListCreate.as_view(), name="unit-list-create"),
+    path("api/units/<int:pk>/", UnitDetail.as_view(), name="unit-detail"),
+
+
+     # Customers
+    path("api/customers/", CustomerListCreate.as_view(), name="customer-list-create"),
+    path("api/customers/<int:pk>/", CustomerDetail.as_view(), name="customer-detail"),
+
+
+]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+
+if settings.DEBUG: 
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

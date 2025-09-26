@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
-from .models import Property, Unit
+from .models import Property, Unit,Customer
 
 
 
@@ -112,10 +112,16 @@ class PropertySerializer(serializers.ModelSerializer):
         model = Property
         fields = "__all__"
 
-
 class UnitSerializer(serializers.ModelSerializer):
+
     property_name = serializers.CharField(source="property.name", read_only=True)
 
     class Meta:
         model = Unit
         fields = "__all__"
+
+class CustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = "__all__"
+

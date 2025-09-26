@@ -18,8 +18,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Property, Unit
-from .serializers import PropertySerializer, UnitSerializer
+from .models import Customer, Property, Unit
+from .serializers import CustomerSerializer, PropertySerializer, UnitSerializer
 from rest_framework import viewsets
 
 
@@ -295,7 +295,6 @@ class ResendActivationWithRateLimitView(APIView):
                 "error": "server_error",
                 "message": "An unexpected error occurred. Please try again later."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 
 class LoginView(generics.GenericAPIView):
@@ -836,3 +835,53 @@ class UnitDetail(APIView):
         unit = get_object_or_404(Unit, pk=pk)
         unit.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+
+# ----------------- Customer APIs -----------------
+class CustomerListCreate(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        customers = Customer.objects.select_related("unit").all().order_by("-created_at")
+        serializer = CustomerSerializer(customers, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = CustomerSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomerDetail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        customer = get_object_or_404(Customer, pk=pk)
+        serializer = CustomerSerializer(customer)
+        return Response(serializer.data)
+
+    def put(self, request, pk):  # full update
+        customer = get_object_or_404(Customer, pk=pk)
+        serializer = CustomerSerializer(customer, data=request.data, partial=False)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):  # partial update
+        customer = get_object_or_404(Customer, pk=pk)
+        serializer = CustomerSerializer(customer, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        customer = get_object_or_404(Customer, pk=pk)
+        # Soft delete instead of hard delete
+        customer.is_active = False
+        customer.save()
+        return Response({"detail": "Customer disabled instead of deleted."}, status=status.HTTP_200_OK)
