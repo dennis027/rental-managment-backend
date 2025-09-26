@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, CustomerDetail, CustomerListCreate, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, CustomerDetail, CustomerListCreate, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
 
 from django.conf import settings
 from django.conf.urls.static import static
@@ -30,6 +30,9 @@ urlpatterns = [
     path("api/customers/", CustomerListCreate.as_view(), name="customer-list-create"),
     path("api/customers/<int:pk>/", CustomerDetail.as_view(), name="customer-detail"),
 
+    # rental contract
+    path("api/contracts/", RentalContractListCreate.as_view(), name="contract-list-create"),
+    path("api/contracts/<int:pk>/", RentalContractDetail.as_view(), name="contract-detail"),
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

@@ -103,3 +103,9 @@ class RentalContract(models.Model):
 
     def __str__(self):
         return f"Contract: {self.customer} → {self.unit} ({self.start_date})"
+
+
+
+
+
+

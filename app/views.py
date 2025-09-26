@@ -18,8 +18,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Property, Unit
-from .serializers import CustomerSerializer, PropertySerializer, UnitSerializer
+from .models import Customer, Property, RentalContract, Unit
+from .serializers import CustomerSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
 from rest_framework import viewsets
 
 
@@ -885,3 +885,55 @@ class CustomerDetail(APIView):
         customer.is_active = False
         customer.save()
         return Response({"detail": "Customer disabled instead of deleted."}, status=status.HTTP_200_OK)
+
+
+# ----------------- RentalContract APIs -----------------
+class RentalContractListCreate(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        contracts = RentalContract.objects.select_related("customer", "unit").all().order_by("-created_at")
+        serializer = RentalContractSerializer(contracts, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = RentalContractSerializer(data=request.data)
+        if serializer.is_valid():
+            contract = serializer.save()
+
+            # Mark unit as occupied
+            unit = contract.unit
+            unit.status = "occupied"
+            unit.save()
+
+            return Response(RentalContractSerializer(contract).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RentalContractDetail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        contract = get_object_or_404(RentalContract, pk=pk)
+        serializer = RentalContractSerializer(contract)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        contract = get_object_or_404(RentalContract, pk=pk)
+        serializer = RentalContractSerializer(contract, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        contract = get_object_or_404(RentalContract, pk=pk)
+
+        # Free up the unit if this contract was active
+        if contract.is_active:
+            unit = contract.unit
+            unit.status = "vacant"
+            unit.save()
+
+        contract.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
