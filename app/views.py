@@ -1,5 +1,5 @@
 from django.shortcuts import render, get_object_or_404
-from rest_framework import generics, status
+from rest_framework import generics, status,filters
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -18,8 +18,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Property, RentalContract, Unit
-from .serializers import CustomerSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
+from .models import Customer, Payment, Property, RentalContract, Unit
+from .serializers import CustomerSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
 from rest_framework import viewsets
 
 
@@ -937,3 +937,30 @@ class RentalContractDetail(APIView):
 
         contract.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+class ContractSearchView(generics.ListAPIView):
+    queryset = RentalContract.objects.all().select_related("customer", "unit")
+    serializer_class = RentalContractSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = [
+        "contract_number",
+        "customer__first_name",
+        "customer__last_name",
+        "customer__phone_number",
+        "customer__email",
+        "unit__unit_number"
+    ]
+    
+
+# ----------------- Models (for payments) -----------------
+
+
+class PaymentListCreateView(generics.ListCreateAPIView):
+    queryset = Payment.objects.all().order_by("-payment_date")
+    serializer_class = PaymentSerializer
+
+
+class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer

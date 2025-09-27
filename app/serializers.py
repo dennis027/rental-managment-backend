@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
-from .models import Property, RentalContract, Unit,Customer
+from .models import Payment, Property, RentalContract, Unit,Customer
 
 
 
@@ -126,16 +126,15 @@ class CustomerSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class RentalContractSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source="customer.__str__", read_only=True)
-    unit_info = serializers.CharField(source="unit.__str__", read_only=True)
+    customer_name = serializers.CharField(source="customer.first_name", read_only=True)
+    customer_phone = serializers.CharField(source="customer.phone_number", read_only=True)
+    unit_info = serializers.CharField(source="unit.unit_number", read_only=True)
 
     class Meta:
         model = RentalContract
-        fields = [
-            "id", "customer", "customer_name",
-            "unit", "unit_info",
-            "start_date", "end_date",
-            "rent_amount", "deposit_amount",
-            "payment_frequency", "is_active",
-            "created_at", "updated_at"
-        ]
+        fields = "__all__"
+
+class PaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payment
+        fields = "__all__"

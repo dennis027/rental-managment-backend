@@ -83,29 +83,43 @@ class Customer(models.Model):
 
 
 class RentalContract(models.Model):
+    contract_number = models.CharField(max_length=50, unique=True, blank=True, null=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="contracts")
     unit = models.ForeignKey(Unit, on_delete=models.CASCADE, related_name="contracts")
-    
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     rent_amount = models.DecimalField(max_digits=10, decimal_places=2)
     deposit_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    
     payment_frequency = models.CharField(
         max_length=20,
         choices=[("monthly", "Monthly"), ("quarterly", "Quarterly"), ("yearly", "Yearly")],
         default="monthly"
     )
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def save(self, *args, **kwargs):
+        if not self.contract_number:
+            self.contract_number = f"CTR-{self.customer.id}-{self.unit.id}-{int(self.start_date.strftime('%Y%m%d'))}"
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Contract: {self.customer} → {self.unit} ({self.start_date})"
+        return f"{self.contract_number} → {self.customer} ({self.unit})"
 
 
 
-
+class Payment(models.Model):
+    contract = models.ForeignKey(RentalContract, on_delete=models.CASCADE, related_name="payments")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    payment_date = models.DateField(auto_now_add=True)
+    method = models.CharField(
+        max_length=20,
+        choices=[("cash", "Cash"), ("mpesa", "M-Pesa"), ("bank", "Bank Transfer")],
+        default="cash"
+    )
+    reference = models.CharField(max_length=100, blank=True, null=True)  # e.g. M-Pesa code
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
