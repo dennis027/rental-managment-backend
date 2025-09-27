@@ -140,3 +140,17 @@ class Expense(models.Model):
 
 
 
+class MaintenanceRequest(models.Model):
+    unit = models.ForeignKey(Unit, on_delete=models.CASCADE, related_name="maintenance_requests")
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name="requests")
+    description = models.TextField()
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("in_progress", "In Progress"), ("resolved", "Resolved")],
+        default="pending"
+    )
+    reported_date = models.DateTimeField(auto_now_add=True)
+    resolved_date = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Request {self.id} - {self.unit} ({self.status})"
