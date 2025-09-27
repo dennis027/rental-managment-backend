@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
-from .models import Payment, Property, RentalContract, Unit,Customer
+from .models import Expense, Payment, Property, RentalContract, Unit,Customer
 
 
 
@@ -138,3 +138,23 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = "__all__"
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    property_name = serializers.CharField(source="property.name", read_only=True)
+    recorded_by_name = serializers.CharField(source="recorded_by.username", read_only=True)
+
+    class Meta:
+        model = Expense
+        fields = [
+            "id",
+            "property",
+            "property_name",
+            "description",
+            "amount",
+            "expense_date",
+            "recorded_by",
+            "recorded_by_name",
+            "created_at",
+            "updated_at",
+        ]
+

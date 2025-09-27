@@ -18,8 +18,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Payment, Property, RentalContract, Unit
-from .serializers import CustomerSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
+from .models import Customer, Expense, Payment, Property, RentalContract, Unit
+from .serializers import CustomerSerializer, ExpenseSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
 from rest_framework import viewsets
 
 
@@ -940,6 +940,7 @@ class RentalContractDetail(APIView):
     
 
 class ContractSearchView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = RentalContract.objects.all().select_related("customer", "unit")
     serializer_class = RentalContractSerializer
     filter_backends = [filters.SearchFilter]
@@ -957,10 +958,31 @@ class ContractSearchView(generics.ListAPIView):
 
 
 class PaymentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = Payment.objects.all().order_by("-payment_date")
     serializer_class = PaymentSerializer
 
 
 class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
+
+
+# ----------------- Models (for expenses) -----------------
+
+class ExpenseListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Expense.objects.all().order_by("-expense_date")
+    serializer_class = ExpenseSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["property__name", "description", "recorded_by__username"]
+
+    def perform_create(self, serializer):
+        serializer.save(recorded_by=self.request.user)
+
+
+class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Expense.objects.all()
+    serializer_class = ExpenseSerializer
