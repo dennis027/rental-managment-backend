@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+import uuid
 
 class CustomUser(AbstractUser):
     email = models.EmailField(unique=True, null=True, blank=True)
@@ -101,7 +102,17 @@ class RentalContract(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.contract_number:
-            self.contract_number = f"CTR-{self.customer.id}-{self.unit.id}-{int(self.start_date.strftime('%Y%m%d'))}"
+            base_number = f"CTR-{self.customer.id}-{self.unit.id}-{int(self.start_date.strftime('%Y%m%d'))}"
+            contract_number = base_number
+
+            # Ensure uniqueness
+            counter = 1
+            while RentalContract.objects.filter(contract_number=contract_number).exists():
+                contract_number = f"{base_number}-{counter}"
+                counter += 1
+
+            self.contract_number = contract_number
+
         super().save(*args, **kwargs)
 
     def __str__(self):

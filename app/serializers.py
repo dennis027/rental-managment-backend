@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
-from .models import Expense, Payment, Property, RentalContract, Unit,Customer
+from .models import Expense, MaintenanceRequest, Payment, Property, RentalContract, Unit,Customer
 
 
 
@@ -158,3 +158,23 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+
+
+class MaintenanceRequestSerializer(serializers.ModelSerializer):
+    unit_name = serializers.CharField(source="unit.name", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+
+    class Meta:
+        model = MaintenanceRequest
+        fields = [
+            "id",
+            "unit",
+            "unit_name",
+            "customer",
+            "customer_name",
+            "description",
+            "status",
+            "reported_date",
+            "resolved_date",
+        ]
+        read_only_fields = ["reported_date", "resolved_date"]

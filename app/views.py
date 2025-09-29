@@ -18,9 +18,11 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Expense, Payment, Property, RentalContract, Unit
-from .serializers import CustomerSerializer, ExpenseSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
+from .models import Customer, Expense, MaintenanceRequest, Payment, Property, RentalContract, Unit
+from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
 from rest_framework import viewsets
+from django.utils.timezone import now
+from django.db.models import Count, Sum, Avg,Q
 
 
 
@@ -899,15 +901,46 @@ class RentalContractListCreate(APIView):
     def post(self, request):
         serializer = RentalContractSerializer(data=request.data)
         if serializer.is_valid():
-            contract = serializer.save()
+            unit = serializer.validated_data["unit"]
+
+            # Check if this unit already has an active contract
+            active_contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
+            if active_contract:
+                return Response(
+                    {"error": "This unit already has an active contract."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            contract = serializer.save(is_active=True)
 
             # Mark unit as occupied
-            unit = contract.unit
             unit.status = "occupied"
             unit.save()
 
             return Response(RentalContractSerializer(contract).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RentalContractCancel(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        contract = get_object_or_404(RentalContract, pk=pk)
+
+        if not contract.is_active:
+            return Response({"error": "Contract is already inactive."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Cancel contract
+        contract.is_active = False
+        contract.end_date = timezone.now().date()
+        contract.save()
+
+        # Free up the unit
+        unit = contract.unit
+        unit.status = "vacant"
+        unit.save()
+
+        return Response({"message": f"Contract {contract.contract_number} has been cancelled."})
 
 
 class RentalContractDetail(APIView):
@@ -927,16 +960,10 @@ class RentalContractDetail(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
-        contract = get_object_or_404(RentalContract, pk=pk)
+        return Response({"error": "Contracts cannot be deleted. Use cancel endpoint instead."},
+                        status=status.HTTP_405_METHOD_NOT_ALLOWED)
+    
 
-        # Free up the unit if this contract was active
-        if contract.is_active:
-            unit = contract.unit
-            unit.status = "vacant"
-            unit.save()
-
-        contract.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
     
 
 class ContractSearchView(generics.ListAPIView):
@@ -986,3 +1013,88 @@ class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
+
+
+#  ....................maintannance request .......................
+
+class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = MaintenanceRequest.objects.all().order_by("-reported_date")
+    serializer_class = MaintenanceRequestSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["description", "status", "unit__name", "customer__name"]
+
+    def perform_create(self, serializer):
+        # Auto-attach the customer if logged in as customer
+        if self.request.user.is_authenticated and hasattr(self.request.user, "customer"):
+            serializer.save(customer=self.request.user.customer)
+        else:
+            serializer.save()
+
+
+class MaintenanceRequestDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = MaintenanceRequest.objects.all()
+    serializer_class = MaintenanceRequestSerializer
+
+    def perform_update(self, serializer):
+        # If status changes to resolved → set resolved_date
+        old_status = self.get_object().status
+        new_status = self.request.data.get("status")
+        if old_status != "resolved" and new_status == "resolved":
+            serializer.save(resolved_date=now())
+        else:
+            serializer.save()
+
+
+
+
+
+
+# #########################   ANALYTICS VIEWS  #########################
+
+class PropertyUnitsAnalyticsView(APIView):
+    def get(self, request):
+        properties = Property.objects.annotate(
+            total_units=Count("units"),
+            occupied_units=Count("units", filter=Q(units__status="occupied")),
+            vacant_units=Count("units", filter=Q(units__status="vacant"))
+        )
+
+        results = []
+        overall_total_units = 0
+        overall_occupied = 0
+        overall_vacant = 0
+
+        for p in properties:
+            overall_total_units += p.total_units
+            overall_occupied += p.occupied_units
+            overall_vacant += p.vacant_units
+
+            percent_occupied = (p.occupied_units / p.total_units * 100) if p.total_units > 0 else 0
+            percent_vacant = (p.vacant_units / p.total_units * 100) if p.total_units > 0 else 0
+
+            results.append({
+                "id": p.id,
+                "name": p.name,
+                "total_units": p.total_units,
+                "occupied_units": p.occupied_units,
+                "vacant_units": p.vacant_units,
+                "percent_occupied": round(percent_occupied, 2),
+                "percent_vacant": round(percent_vacant, 2)
+            })
+
+        overall_percent_occupied = (overall_occupied / overall_total_units * 100) if overall_total_units > 0 else 0
+        overall_percent_vacant = (overall_vacant / overall_total_units * 100) if overall_total_units > 0 else 0
+
+        return Response({
+            "total_properties": len(results),
+            "overall": {
+                "total_units": overall_total_units,
+                "occupied_units": overall_occupied,
+                "vacant_units": overall_vacant,
+                "percent_occupied": round(overall_percent_occupied, 2),
+                "percent_vacant": round(overall_percent_vacant, 2)
+            },
+            "properties": results
+        })

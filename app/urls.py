@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, PaymentDetailView, PaymentListCreateView, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
 
 from django.conf import settings
 from django.conf.urls.static import static
@@ -33,6 +33,7 @@ urlpatterns = [
     # rental contract
     path("api/contracts/", RentalContractListCreate.as_view(), name="contract-list-create"),
     path("api/contracts/<int:pk>/", RentalContractDetail.as_view(), name="contract-detail"),
+    path("api/contracts/<int:pk>/cancel/", RentalContractCancel.as_view(), name="contract-cancel"),
     path("api/contracts/search/", ContractSearchView.as_view(), name="contract-search"),
 
     # payrments APIs
@@ -42,7 +43,15 @@ urlpatterns = [
     # expenses APIs
     path("api/expenses/", ExpenseListCreateView.as_view(), name="expense-list-create"),
     path("api/expenses/<int:pk>/", ExpenseDetailView.as_view(), name="expense-detail"),
-    
+
+    # maintenance request APIs
+    path("api/maintenance-requests/", MaintenanceRequestListCreateView.as_view(), name="maintenance-request-list-create"),
+    path("api/maintenance-requests/<int:pk>/", MaintenanceRequestDetailView.as_view(), name="maintenance-request-detail"),
+
+
+    # General Analytics Endpoint
+     path("api/analytics/properties/", PropertyUnitsAnalyticsView.as_view(), name="property-analytics"),
+
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
