@@ -18,8 +18,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Expense, MaintenanceRequest, Payment, Property, RentalContract, Unit
-from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, RentalContractSerializer, UnitSerializer
+from .models import Customer, Expense, MaintenanceRequest, Payment, Property, Receipt, RentalContract, Unit
+from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, ReceiptSerializer, RentalContractSerializer, UnitSerializer
 from rest_framework import viewsets
 from django.utils.timezone import now
 from django.db.models import Count, Sum, Avg,Q
@@ -964,7 +964,7 @@ class RentalContractDetail(APIView):
                         status=status.HTTP_405_METHOD_NOT_ALLOWED)
     
 
-    
+
 
 class ContractSearchView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -1054,6 +1054,7 @@ class MaintenanceRequestDetailView(generics.RetrieveUpdateDestroyAPIView):
 # #########################   ANALYTICS VIEWS  #########################
 
 class PropertyUnitsAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         properties = Property.objects.annotate(
             total_units=Count("units"),
@@ -1098,3 +1099,16 @@ class PropertyUnitsAnalyticsView(APIView):
             },
             "properties": results
         })
+    
+
+# ######## RECEIPT VIEW #########
+class ReceiptListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Receipt.objects.all().select_related("contract", "issued_by")
+    serializer_class = ReceiptSerializer
+
+
+class ReceiptDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Receipt.objects.all().select_related("contract", "issued_by")
+    serializer_class = ReceiptSerializer

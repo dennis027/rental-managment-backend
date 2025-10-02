@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 import uuid
+from django.utils import timezone
 
 class CustomUser(AbstractUser):
     email = models.EmailField(unique=True, null=True, blank=True)
@@ -46,8 +47,18 @@ class Unit(models.Model):
         choices=[("vacant", "Vacant"), ("occupied", "Occupied")],
         default="vacant"
     )
+    water_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     created_at = models.DateTimeField(auto_now_add=True)  
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["property", "unit_number"],
+                name="unique_unit_number_per_property"
+            )
+        ]
 
     def __str__(self):
         return f"{self.property.name} - {self.unit_number} ({self.get_unit_type_display()})"
@@ -165,3 +176,65 @@ class MaintenanceRequest(models.Model):
 
     def __str__(self):
         return f"Request {self.id} - {self.unit} ({self.status})"
+
+
+
+class Receipt(models.Model):
+    contract = models.ForeignKey(
+        "RentalContract",
+        on_delete=models.CASCADE,
+        related_name="receipts"
+    )
+    issued_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_receipts"
+    )
+
+    # Core financial fields
+    monthly_rent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    rental_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    previous_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    other_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # Meter readings
+    previous_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    current_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # Auto-generated fields
+    receipt_number = models.CharField(max_length=50, unique=True, editable=False)
+    issue_date = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        if not self.receipt_number:
+            # Example: RCT-<contract_id>-<year><month><day>-<count>
+            today = timezone.now().strftime("%Y%m%d")
+            count = Receipt.objects.filter(contract=self.contract).count() + 1
+            self.receipt_number = f"RCT-{self.contract.id}-{today}-{count}"
+        super().save(*args, **kwargs)
+
+    @property
+    def total_amount(self):
+        return (
+            self.monthly_rent +
+            self.rental_deposit +
+            self.electricity_deposit +
+            self.electricity_bill +
+            self.water_deposit +
+            self.water_bill +
+            self.service_charge +
+            self.security_charge +
+            self.previous_balance +
+            self.other_charges
+        )
+
+    def __str__(self):
+        return f"Receipt {self.receipt_number} - Contract {self.contract.contract_number}"
