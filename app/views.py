@@ -13,6 +13,7 @@ from django.utils import timezone
 from datetime import timedelta
 import random
 import logging
+from datetime import datetime
 from rest_framework.permissions import IsAuthenticated 
 from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
@@ -805,6 +806,8 @@ class UnitListCreate(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+            
 
 
 class UnitDetail(APIView):
@@ -1010,7 +1013,7 @@ class ExpenseListCreateView(generics.ListCreateAPIView):
 
 
 class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated] 
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
 
@@ -1110,5 +1113,141 @@ class ReceiptListCreateView(generics.ListCreateAPIView):
 
 class ReceiptDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Receipt.objects.all().select_related("contract", "issued_by")
+    queryset = Receipt.objects.all().select_related("contract", "issued_by", "contract__unit__property", "contract__customer")
     serializer_class = ReceiptSerializer
+
+    
+
+class GenerateMonthlyReceiptsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        month = request.data.get("month")
+        if not month:
+            return Response(
+                {"error": "❌ Month is required (e.g. 2025-11)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year, month_num = map(int, month.split("-"))
+        except ValueError:
+            return Response(
+                {"error": "⚠️ Invalid month format. Use YYYY-MM."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created_count = 0
+        skipped_existing = 0
+        skipped_inactive = 0
+        created_receipts = []
+
+        # 🔹 Loop through all units
+        for unit in Unit.objects.all():
+            # Check if the unit has an active contract
+            contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
+            if not contract:
+                skipped_inactive += 1
+                continue
+
+            # Check if receipt already exists for this contract & month
+            exists = Receipt.objects.filter(
+                contract=contract,
+                issue_date__year=year,
+                issue_date__month=month_num,
+            ).exists()
+
+            if exists:
+                skipped_existing += 1
+                continue
+
+            # Create timezone-aware date for the first day of the month
+            issue_date = timezone.make_aware(datetime(year, month_num, 1))
+
+            # Create new receipt
+            receipt = Receipt.objects.create(
+                contract=contract,
+                monthly_rent=contract.rent_amount,
+                previous_water_reading=unit.water_meter_reading,
+                previous_electricity_reading=unit.electricity_meter_reading,
+                issue_date=issue_date,
+            )
+            created_count += 1
+
+            # Add receipt info for response
+            created_receipts.append({
+                "month": f"{year}-{month_num:02d}",
+                "receipt_number": receipt.receipt_number,
+                "property": unit.property.name if unit.property else None,
+                "unit": unit.unit_number,
+                "customer": str(contract.customer),
+                "amount": str(contract.rent_amount),
+                "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
+            })
+
+        # 📦 Return clear, structured response
+        return Response({
+            "status": "✅ Receipts Generation Completed",
+            "month_generated": f"{year}-{month_num:02d}",
+            "summary": {
+                "total_units_checked": Unit.objects.count(),
+                "receipts_created": created_count,
+                "already_existed": skipped_existing,
+                "no_active_contract": skipped_inactive,
+            },
+            "generated_receipts": created_receipts
+        }, status=status.HTTP_201_CREATED)
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        month = request.data.get("month")
+        if not month:
+            return Response({"error": "Month is required (e.g. 2025-11)."}, status=400)
+        
+        try:
+            year, month_num = map(int, month.split("-"))
+        except ValueError:
+            return Response({"error": "Invalid month format. Use YYYY-MM."}, status=400)
+
+        created_count = 0
+        skipped_existing = 0
+        skipped_inactive = 0
+
+        # 🔹 Get all active units
+        units = Unit.objects.all()
+
+        for unit in units:
+            # 🔹 Check if the unit has an active contract
+            contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
+            if not contract:
+                skipped_inactive += 1
+                continue
+
+            # 🔹 Skip if receipt for this contract already exists for that month
+            exists = Receipt.objects.filter(
+                contract=contract,
+                issue_date__year=year,
+                issue_date__month=month_num
+            ).exists()
+
+            if exists:
+                skipped_existing += 1
+                continue
+
+            # 🔹 Create the receipt
+            Receipt.objects.create(
+                contract=contract,
+                monthly_rent=contract.rent_amount,
+                previous_water_reading=unit.water_meter_reading,
+                previous_electricity_reading=unit.electricity_meter_reading,
+                issue_date=timezone.make_aware(datetime(year, month_num, 1))
+            )
+            created_count += 1
+
+        return Response({
+            "message": (
+                f"{created_count} receipts generated. "
+                f"{skipped_existing} skipped (already existed). "
+                f"{skipped_inactive} skipped (no active contract)."
+            )
+        }, status=status.HTTP_201_CREATED)

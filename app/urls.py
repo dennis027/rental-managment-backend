@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, GenerateMonthlyReceiptsView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
 
 from django.conf import settings
 from django.conf.urls.static import static
@@ -51,6 +51,7 @@ urlpatterns = [
     # Receipt APIs
     path("api/receipts/", ReceiptListCreateView.as_view(), name="receipt-list-create"),
     path("api/receipts/<int:pk>/", ReceiptDetailView.as_view(), name="receipt-detail"),
+    path('api/receipts/generate-monthly-receipts/', GenerateMonthlyReceiptsView.as_view(), name='generate-receipts'),
 
 
     # General Analytics Endpoint

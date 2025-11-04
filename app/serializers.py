@@ -179,22 +179,22 @@ class MaintenanceRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ["reported_date", "resolved_date"]
 
 class ReceiptSerializer(serializers.ModelSerializer):
-    total_amount = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
-    )
-    contract_number = serializers.CharField(
-        source="contract.contract_number", read_only=True
-    )
-
+    unit = serializers.CharField(source="contract.unit.unit_number", read_only=True)
+    property = serializers.CharField(source="contract.unit.property.name", read_only=True)
+    customer = serializers.CharField(source="contract.customer.first_name", read_only=True)
+    total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    contract_number = serializers.CharField(source="contract.contract_number", read_only=True)
     class Meta:
         model = Receipt
         fields = [
             "id",
             "receipt_number",
-            "contract",
-            "contract_number",
-            "issued_by",
             "issue_date",
+            "contract",
+            "contract_number", 
+            "property",
+            "unit",
+            "customer",
             "monthly_rent",
             "rental_deposit",
             "electricity_deposit",
@@ -207,8 +207,11 @@ class ReceiptSerializer(serializers.ModelSerializer):
             "other_charges",
             "previous_water_reading",
             "current_water_reading",
+            "previous_electricity_reading",
+            "current_electricity_reading",
             "total_amount",
         ]
+
         read_only_fields = ["receipt_number", "issue_date", "total_amount", "issued_by"]
 
     def create(self, validated_data):
@@ -216,20 +219,15 @@ class ReceiptSerializer(serializers.ModelSerializer):
         if request and hasattr(request, "user"):
             validated_data["issued_by"] = request.user
 
-        # create the receipt
         receipt = super().create(validated_data)
 
-        # update the linked Unit readings
+        # 🔹 Update linked Unit readings
         unit = receipt.contract.unit
         if receipt.current_water_reading is not None:
             unit.water_meter_reading = receipt.current_water_reading
 
-        if receipt.electricity_meter_reading is not None:
-            unit.electricity_meter_reading = receipt.electricity_meter_reading
-
-        # ⚡ If you want to support electricity later,
-        # add current_electricity_reading field in Receipt
-        # and then update unit.electricity_meter_reading here
+        if receipt.current_electricity_reading is not None:
+            unit.electricity_meter_reading = receipt.current_electricity_reading
 
         unit.save(update_fields=["water_meter_reading", "electricity_meter_reading"])
 

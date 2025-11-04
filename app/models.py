@@ -1,5 +1,5 @@
 from django.contrib.auth.models import AbstractUser
-from django.db import models
+from django.db import models,IntegrityError,DatabaseError
 import uuid
 from django.utils import timezone
 
@@ -177,9 +177,67 @@ class MaintenanceRequest(models.Model):
     def __str__(self):
         return f"Request {self.id} - {self.unit} ({self.status})"
 
-
-
 class Receipt(models.Model):
+    contract = models.ForeignKey(
+        "RentalContract",
+        on_delete=models.CASCADE,
+        related_name="receipts"
+    )
+    issued_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_receipts"
+    )
+
+    # Core financial fields
+    monthly_rent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    rental_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    previous_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    other_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # Meter readings
+    previous_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    current_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    previous_electricity_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    current_electricity_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # Auto-generated fields
+    receipt_number = models.CharField(max_length=50, unique=True, editable=False)
+    issue_date = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        if not self.receipt_number:
+            today = timezone.now().strftime("%Y%m%d")
+            count = Receipt.objects.filter(contract=self.contract).count() + 1
+            self.receipt_number = f"RCT-{self.contract.id}-{today}-{count}"
+        super().save(*args, **kwargs)
+
+    @property
+    def total_amount(self):
+        return (
+            self.monthly_rent +
+            self.rental_deposit +
+            self.electricity_deposit +
+            self.electricity_bill +
+            self.water_deposit +
+            self.water_bill +
+            self.service_charge +
+            self.security_charge +
+            self.previous_balance +
+            self.other_charges
+        )
+
+    def __str__(self):
+        return f"Receipt {self.receipt_number} - Contract {self.contract.contract_number}"
+
     contract = models.ForeignKey(
         "RentalContract",
         on_delete=models.CASCADE,
@@ -214,27 +272,64 @@ class Receipt(models.Model):
     issue_date = models.DateTimeField(default=timezone.now)
 
     def save(self, *args, **kwargs):
+        # Automatically link unit and property from the contract
+        if self.contract:
+            self.unit = self.contract.unit
+            self.property = self.contract.unit.property
+
+        # If issue_date is not set, default to now
+        if not self.issue_date:
+            self.issue_date = timezone.now()
+
+        # Generate a unique receipt number based on issue_date (month + year)
         if not self.receipt_number:
-            # Example: RCT-<contract_id>-<year><month><day>-<count>
-            today = timezone.now().strftime("%Y%m%d")
-            count = Receipt.objects.filter(contract=self.contract).count() + 1
-            self.receipt_number = f"RCT-{self.contract.id}-{today}-{count}"
-        super().save(*args, **kwargs)
+            # Use issue_date to extract target year and month
+            issue_year = self.issue_date.year
+            issue_month = self.issue_date.month
+            formatted_month = f"{issue_month:02d}"  # ensure 09 instead of 9
+
+            # Filter receipts of same contract and same year-month
+            count = (
+                Receipt.objects.filter(
+                    contract=self.contract,
+                    issue_date__year=issue_year,
+                    issue_date__month=issue_month
+                ).count() + 1
+            )
+
+            # Generate code using the year-month (YYYYMM)
+            self.receipt_number = f"RCT-{self.contract.id}-{issue_year}{formatted_month}-{count}"
+
+        # Safety net for unique constraint
+        try:
+            super().save(*args, **kwargs)
+        except IntegrityError:
+            count = (
+                Receipt.objects.filter(contract=self.contract).count() + 1
+            )
+            issue_year = self.issue_date.year
+            issue_month = self.issue_date.month
+            formatted_month = f"{issue_month:02d}"
+            self.receipt_number = f"RCT-{self.contract.id}-{issue_year}{formatted_month}-{count}"
+            super().save(*args, **kwargs)
 
     @property
     def total_amount(self):
-        return (
-            self.monthly_rent +
-            self.rental_deposit +
-            self.electricity_deposit +
-            self.electricity_bill +
-            self.water_deposit +
-            self.water_bill +
-            self.service_charge +
-            self.security_charge +
-            self.previous_balance +
-            self.other_charges
-        )
+        return sum([
+            self.monthly_rent,
+            self.rental_deposit,
+            self.electricity_deposit,
+            self.electricity_bill,
+            self.water_deposit,
+            self.water_bill,
+            self.service_charge,
+            self.security_charge,
+            self.previous_balance,
+            self.other_charges,
+        ])
 
     def __str__(self):
         return f"Receipt {self.receipt_number} - Contract {self.contract.contract_number}"
+
+
+

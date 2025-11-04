@@ -177,3 +177,9 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,                  
     "BLACKLIST_AFTER_ROTATION": True,
 }
+
+
+
+# Django example (settings.py if using django-csp)
+CSP_DEFAULT_SRC = ("'self'",)
+CSP_CONNECT_SRC = ("'self'", "http://localhost:4200", "ws://localhost:4200")
