@@ -333,3 +333,43 @@ class Receipt(models.Model):
 
 
 
+# ######system params
+
+class SystemParameter(models.Model):
+    property = models.OneToOneField(
+        Property,
+        on_delete=models.CASCADE,
+        related_name="system_parameters"
+    )
+
+    #  Bill inclusions
+    has_water_bill = models.BooleanField(default=True)
+    has_electricity_bill = models.BooleanField(default=True)
+    has_service_charge = models.BooleanField(default=True)
+    has_security_charge = models.BooleanField(default=False)
+    has_other_charges = models.BooleanField(default=False)
+
+    #  Deposit configuration
+    rent_deposit_months = models.PositiveIntegerField(default=1)
+    require_water_deposit = models.BooleanField(default=False)
+    require_electricity_deposit = models.BooleanField(default=False)
+
+    #  Optional settings
+    allow_partial_payments = models.BooleanField(default=True)
+    auto_generate_receipts = models.BooleanField(default=False)
+    late_payment_penalty_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=0.00,
+        help_text="Percentage penalty for late rent (e.g., 2.5 means 2.5%)"
+    )
+    grace_period_days = models.PositiveIntegerField(default=5)
+
+    #  Default fees (optional)
+    default_service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    default_security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    default_other_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"System Params for {self.property.name}"

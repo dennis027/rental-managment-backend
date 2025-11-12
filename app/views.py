@@ -19,8 +19,8 @@ from django.template.loader import render_to_string
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core.cache import cache
-from .models import Customer, Expense, MaintenanceRequest, Payment, Property, Receipt, RentalContract, Unit
-from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, ReceiptSerializer, RentalContractSerializer, UnitSerializer
+from .models import Customer, Expense, MaintenanceRequest, Payment, Property, Receipt, RentalContract, SystemParameter, Unit
+from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, ReceiptSerializer, RentalContractSerializer, SystemParameterSerializer, UnitSerializer
 from rest_framework import viewsets
 from django.utils.timezone import now
 from django.db.models import Count, Sum, Avg,Q
@@ -1116,19 +1116,25 @@ class ReceiptDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Receipt.objects.all().select_related("contract", "issued_by", "contract__unit__property", "contract__customer")
     serializer_class = ReceiptSerializer
 
-    
 
 class GenerateMonthlyReceiptsView(APIView):
     permission_classes = [IsAuthenticated]
-
+    
     def post(self, request):
         month = request.data.get("month")
+        property_id = request.data.get("property_id")
+        
         if not month:
             return Response(
-                {"error": "❌ Month is required (e.g. 2025-11)."},
+                {"error": "❌ 'month' is required (e.g. 2025-11)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
+        if not property_id:
+            return Response(
+                {"error": "❌ 'property_id' is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
         try:
             year, month_num = map(int, month.split("-"))
         except ValueError:
@@ -1136,118 +1142,105 @@ class GenerateMonthlyReceiptsView(APIView):
                 {"error": "⚠️ Invalid month format. Use YYYY-MM."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
+        
+        # 🔹 Validate property
+        property_obj = get_object_or_404(Property, id=property_id)
+        
+        # 🔹 Get all units for this property
+        units = Unit.objects.filter(property=property_obj)
+        
         created_count = 0
         skipped_existing = 0
         skipped_inactive = 0
         created_receipts = []
-
-        # 🔹 Loop through all units
-        for unit in Unit.objects.all():
-            # Check if the unit has an active contract
+        
+        for unit in units:
+            # 🔹 Check for an active contract
             contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
             if not contract:
                 skipped_inactive += 1
                 continue
-
-            # Check if receipt already exists for this contract & month
+            
+            # 🔹 Skip if receipt already exists
             exists = Receipt.objects.filter(
                 contract=contract,
                 issue_date__year=year,
                 issue_date__month=month_num,
             ).exists()
-
             if exists:
                 skipped_existing += 1
                 continue
-
-            # Create timezone-aware date for the first day of the month
+            
+            # 🔹 Create receipt
             issue_date = timezone.make_aware(datetime(year, month_num, 1))
-
-            # Create new receipt
             receipt = Receipt.objects.create(
                 contract=contract,
                 monthly_rent=contract.rent_amount,
                 previous_water_reading=unit.water_meter_reading,
                 previous_electricity_reading=unit.electricity_meter_reading,
                 issue_date=issue_date,
+                issued_by=request.user  # 🔹 Track who generated the receipt
             )
+            
             created_count += 1
-
-            # Add receipt info for response
             created_receipts.append({
                 "month": f"{year}-{month_num:02d}",
                 "receipt_number": receipt.receipt_number,
-                "property": unit.property.name if unit.property else None,
+                "property_id": property_obj.id,  # 🔹 Added property_id
+                "property": property_obj.name,
+                "unit_id": unit.id,  # 🔹 Added unit_id for reference
                 "unit": unit.unit_number,
+                "customer_id": contract.customer.id,  # 🔹 Added customer_id
                 "customer": str(contract.customer),
+                "contract_id": contract.id,  # 🔹 Added contract_id
                 "amount": str(contract.rent_amount),
                 "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
             })
-
-        # 📦 Return clear, structured response
+        
         return Response({
             "status": "✅ Receipts Generation Completed",
+            "property_id": property_obj.id,  # 🔹 Added property_id in response
+            "property": property_obj.name,
             "month_generated": f"{year}-{month_num:02d}",
             "summary": {
-                "total_units_checked": Unit.objects.count(),
+                "total_units_checked": units.count(),
                 "receipts_created": created_count,
                 "already_existed": skipped_existing,
                 "no_active_contract": skipped_inactive,
             },
             "generated_receipts": created_receipts
         }, status=status.HTTP_201_CREATED)
+
+
+class PropertySystemParameterView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        month = request.data.get("month")
-        if not month:
-            return Response({"error": "Month is required (e.g. 2025-11)."}, status=400)
-        
-        try:
-            year, month_num = map(int, month.split("-"))
-        except ValueError:
-            return Response({"error": "Invalid month format. Use YYYY-MM."}, status=400)
+    def get(self, request, property_id):
+        """
+        Get or auto-create System Parameters for a specific property
+        """
+        system_param, created = SystemParameter.objects.get_or_create(property_id=property_id)
+        serializer = SystemParameterSerializer(system_param)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
-        created_count = 0
-        skipped_existing = 0
-        skipped_inactive = 0
+    def put(self, request, property_id):
+        """
+        Update System Parameters for a property
+        """
+        system_param = get_object_or_404(SystemParameter, property_id=property_id)
+        serializer = SystemParameterSerializer(system_param, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # 🔹 Get all active units
-        units = Unit.objects.all()
-
-        for unit in units:
-            # 🔹 Check if the unit has an active contract
-            contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
-            if not contract:
-                skipped_inactive += 1
-                continue
-
-            # 🔹 Skip if receipt for this contract already exists for that month
-            exists = Receipt.objects.filter(
-                contract=contract,
-                issue_date__year=year,
-                issue_date__month=month_num
-            ).exists()
-
-            if exists:
-                skipped_existing += 1
-                continue
-
-            # 🔹 Create the receipt
-            Receipt.objects.create(
-                contract=contract,
-                monthly_rent=contract.rent_amount,
-                previous_water_reading=unit.water_meter_reading,
-                previous_electricity_reading=unit.electricity_meter_reading,
-                issue_date=timezone.make_aware(datetime(year, month_num, 1))
-            )
-            created_count += 1
-
-        return Response({
-            "message": (
-                f"{created_count} receipts generated. "
-                f"{skipped_existing} skipped (already existed). "
-                f"{skipped_inactive} skipped (no active contract)."
-            )
-        }, status=status.HTTP_201_CREATED)
+    def patch(self, request, property_id):
+        """
+        Partial update System Parameters for a property
+        """
+        system_param = get_object_or_404(SystemParameter, property_id=property_id)
+        serializer = SystemParameterSerializer(system_param, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

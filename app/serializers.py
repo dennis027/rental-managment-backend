@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
-from .models import Expense, MaintenanceRequest, Payment, Property, Receipt, RentalContract, Unit,Customer
+from .models import Expense, MaintenanceRequest, Payment, Property, Receipt, RentalContract, SystemParameter, Unit,Customer
 
 
 
@@ -126,13 +126,23 @@ class CustomerSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class RentalContractSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source="customer.first_name", read_only=True)
+    customer_name = serializers.SerializerMethodField()
     customer_phone = serializers.CharField(source="customer.phone_number", read_only=True)
     unit_info = serializers.CharField(source="unit.unit_number", read_only=True)
+    id_photo_front = serializers.ImageField(source="customer.id_photo_front", read_only=True)
+    id_photo_back = serializers.ImageField(source="customer.id_photo_back", read_only=True)
+    
 
     class Meta:
         model = RentalContract
         fields = "__all__"
+
+    def get_customer_name(self, obj):
+        if obj.customer:
+            # Combine first and last name safely
+            return f"{obj.customer.first_name} {obj.customer.last_name}".strip()
+        return None
+
 
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -162,12 +172,14 @@ class MaintenanceRequestSerializer(serializers.ModelSerializer):
 
     unit_name = serializers.CharField(source="unit.name", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
+    property_id = serializers.CharField(source="unit.property.id", read_only=True)
 
     class Meta:
         model = MaintenanceRequest
         fields = [
             "id",
             "unit",
+            "property_id",
             "unit_name",
             "customer",
             "customer_name",
@@ -181,6 +193,7 @@ class MaintenanceRequestSerializer(serializers.ModelSerializer):
 class ReceiptSerializer(serializers.ModelSerializer):
     unit = serializers.CharField(source="contract.unit.unit_number", read_only=True)
     property = serializers.CharField(source="contract.unit.property.name", read_only=True)
+    property_id = serializers.CharField(source="contract.unit.property.id", read_only=True)
     customer = serializers.CharField(source="contract.customer.first_name", read_only=True)
     total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     contract_number = serializers.CharField(source="contract.contract_number", read_only=True)
@@ -193,6 +206,7 @@ class ReceiptSerializer(serializers.ModelSerializer):
             "contract",
             "contract_number", 
             "property",
+            "property_id",
             "unit",
             "customer",
             "monthly_rent",
@@ -232,3 +246,20 @@ class ReceiptSerializer(serializers.ModelSerializer):
         unit.save(update_fields=["water_meter_reading", "electricity_meter_reading"])
 
         return receipt
+
+class SystemParameterSerializer(serializers.ModelSerializer):
+    property_name = serializers.CharField(source='property.name', read_only=True)
+
+    class Meta:
+        model = SystemParameter
+        fields = [
+            'id', 'property', 'property_name',
+            'has_water_bill', 'has_electricity_bill',
+            'has_service_charge', 'has_security_charge', 'has_other_charges',
+            'rent_deposit_months', 'require_water_deposit', 'require_electricity_deposit',
+            'allow_partial_payments', 'auto_generate_receipts',
+            'late_payment_penalty_rate', 'grace_period_days',
+            'default_service_charge', 'default_security_charge', 'default_other_charge',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']

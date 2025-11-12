@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, GenerateMonthlyReceiptsView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, GenerateMonthlyReceiptsView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertySystemParameterView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
 
 from django.conf import settings
 from django.conf.urls.static import static
@@ -56,6 +56,9 @@ urlpatterns = [
 
     # General Analytics Endpoint
      path("api/analytics/properties/", PropertyUnitsAnalyticsView.as_view(), name="property-analytics"),
+
+
+     path("api/properties/<int:property_id>/system-parameters/", PropertySystemParameterView.as_view(), name="property-system-parameters"),
 
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
