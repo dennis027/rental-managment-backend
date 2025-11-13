@@ -22,7 +22,6 @@ class Property(models.Model):
     is_active = models.BooleanField(default=True)
     def __str__(self):
         return self.name
-    
 class Unit(models.Model):
     class UnitType(models.TextChoices):
         SINGLE = "single", "Single"
@@ -35,12 +34,8 @@ class Unit(models.Model):
         FIVE_BEDROOM = "five_bedroom", "Five Bedroom"
 
     property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="units")
-    unit_number = models.CharField(max_length=100) 
-    unit_type = models.CharField(
-        max_length=20,
-        choices=UnitType.choices,
-        default=UnitType.SINGLE
-    )
+    unit_number = models.CharField(max_length=100)
+    unit_type = models.CharField(max_length=20, choices=UnitType.choices, default=UnitType.SINGLE)
     rent_amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(
         max_length=20,
@@ -49,21 +44,40 @@ class Unit(models.Model):
     )
     water_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     electricity_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    created_at = models.DateTimeField(auto_now_add=True)  
+    
+    # 🧾 new fields
+    total_billed = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    total_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["property", "unit_number"],
-                name="unique_unit_number_per_property"
-            )
+            models.UniqueConstraint(fields=["property", "unit_number"], name="unique_unit_number_per_property")
         ]
 
     def __str__(self):
         return f"{self.property.name} - {self.unit_number} ({self.get_unit_type_display()})"
 
+    # 💡 Computed logic
+    def recalculate_balance(self):
+        """Recalculate billed, paid, and balance for this unit."""
+        from django.db.models import Sum
 
+        total_billed = self.contracts.filter(is_active=True)\
+            .values_list("receipts__total_amount", flat=True)
+        total_billed = sum(total_billed) if total_billed else 0
+
+        total_paid = self.contracts.filter(is_active=True)\
+            .values_list("receipts__amount_paid", flat=True)
+        total_paid = sum(total_paid) if total_paid else 0
+
+        self.total_billed = total_billed
+        self.total_paid = total_paid
+        self.balance = total_billed - total_paid  # + means debt, - means overpayment
+        self.save(update_fields=["total_billed", "total_paid", "balance"])
 
 
 # customer details 
@@ -130,19 +144,34 @@ class RentalContract(models.Model):
         return f"{self.contract_number} → {self.customer} ({self.unit})"
 
 
-
 class Payment(models.Model):
-    contract = models.ForeignKey(RentalContract, on_delete=models.CASCADE, related_name="payments")
+    receipt = models.ForeignKey("Receipt", on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_date = models.DateField(auto_now_add=True)
     method = models.CharField(
         max_length=20,
-        choices=[("cash", "Cash"), ("mpesa", "M-Pesa"), ("bank", "Bank Transfer")],
+        choices=[
+            ("cash", "Cash"),
+            ("mpesa", "M-Pesa"),
+            ("bank", "Bank Transfer"),
+        ],
         default="cash"
     )
-    reference = models.CharField(max_length=100, blank=True, null=True)  # e.g. M-Pesa code
+    reference = models.CharField(max_length=100, blank=True, null=True, unique=True)  # Prevent duplicates
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+def save(self, *args, **kwargs):
+    super().save(*args, **kwargs)
+
+    # Update receipt totals
+    self.receipt.amount_paid += self.amount
+    self.receipt.save(update_fields=["amount_paid"])
+    self.receipt.update_status()
+
+    # Update unit balance
+    unit = self.receipt.contract.unit
+    unit.recalculate_balance()
 
 
 
@@ -191,6 +220,13 @@ class Receipt(models.Model):
         related_name="issued_receipts"
     )
 
+    STATUS_CHOICES = [
+        ('unpaid', 'Unpaid'),
+        ('partial', 'Partially Paid'),
+        ('paid', 'Fully Paid'),
+    ]
+
+
     # Core financial fields
     monthly_rent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     rental_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -211,6 +247,10 @@ class Receipt(models.Model):
 
     # Auto-generated fields
     receipt_number = models.CharField(max_length=50, unique=True, editable=False)
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='unpaid')
+    is_paid = models.BooleanField(default=False)
+
     issue_date = models.DateTimeField(default=timezone.now)
 
     def save(self, *args, **kwargs):
@@ -313,6 +353,24 @@ class Receipt(models.Model):
             self.receipt_number = f"RCT-{self.contract.id}-{issue_year}{formatted_month}-{count}"
             super().save(*args, **kwargs)
 
+        
+    def update_status(self):
+        """Automatically update payment status and is_paid based on totals."""
+        total = self.total_amount
+
+        if self.amount_paid == 0:
+            self.status = "unpaid"
+            self.is_paid = False
+        elif self.amount_paid < total:
+            self.status = "partial"
+            self.is_paid = False
+        else:
+            self.status = "paid"
+            self.is_paid = True
+
+        self.save(update_fields=["status", "is_paid"])
+
+
     @property
     def total_amount(self):
         return sum([
@@ -367,6 +425,8 @@ class SystemParameter(models.Model):
     default_service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     default_security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     default_other_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electicity_unit_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_unit_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -901,12 +901,13 @@ class RentalContractListCreate(APIView):
         serializer = RentalContractSerializer(contracts, many=True)
         return Response(serializer.data)
 
+    @transaction.atomic
     def post(self, request):
         serializer = RentalContractSerializer(data=request.data)
         if serializer.is_valid():
             unit = serializer.validated_data["unit"]
 
-            # Check if this unit already has an active contract
+            # 1️⃣ Prevent multiple active contracts per unit
             active_contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
             if active_contract:
                 return Response(
@@ -914,14 +915,57 @@ class RentalContractListCreate(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # 2️⃣ Create the contract
             contract = serializer.save(is_active=True)
 
-            # Mark unit as occupied
+            # 3️⃣ Mark unit as occupied
             unit.status = "occupied"
             unit.save()
 
+            # 4️⃣ Fetch system parameters (if exist)
+            try:
+                system_params = SystemParameter.objects.get(property=unit.property)
+            except SystemParameter.DoesNotExist:
+                system_params = None
+
+            # 5️⃣ Auto-generate initial receipt
+            self._create_initial_receipt(contract, request.user, system_params)
+
             return Response(RentalContractSerializer(contract).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def _create_initial_receipt(self, contract, user, system_params=None):
+        """
+        Generate a receipt when a new rental contract is created.
+        """
+        # Determine deposit requirements
+        water_deposit = 0
+        electricity_deposit = 0
+        service_charge = 0
+
+        if system_params:
+            if system_params.require_water_deposit:
+                water_deposit = system_params.water_unit_cost or 0
+
+            if system_params.require_electricity_deposit:
+                electricity_deposit = system_params.electicity_unit_cost or 0
+
+            if system_params.has_service_charge:
+                service_charge = system_params.default_service_charge or 0
+
+        # Create receipt
+        Receipt.objects.create(
+            contract=contract,
+            issued_by=user,
+            monthly_rent=contract.rent_amount,
+            rental_deposit=contract.deposit_amount,
+            electricity_deposit=electricity_deposit,
+            water_deposit=water_deposit,
+            service_charge=service_charge,
+            previous_balance=0.00,
+            other_charges=0.00
+        )
+
 
 
 class RentalContractCancel(APIView):
@@ -941,6 +985,9 @@ class RentalContractCancel(APIView):
         # Free up the unit
         unit = contract.unit
         unit.status = "vacant"
+        unit = self.unit
+        unit.balance = 0
+        unit.save(update_fields=["balance"])
         unit.save()
 
         return Response({"message": f"Contract {contract.contract_number} has been cancelled."})

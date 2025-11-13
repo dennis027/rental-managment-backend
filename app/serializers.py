@@ -143,7 +143,6 @@ class RentalContractSerializer(serializers.ModelSerializer):
             return f"{obj.customer.first_name} {obj.customer.last_name}".strip()
         return None
 
-
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
@@ -215,6 +214,7 @@ class ReceiptSerializer(serializers.ModelSerializer):
             "electricity_bill",
             "water_deposit",
             "water_bill",
+            "status",
             "service_charge",
             "security_charge",
             "previous_balance",
@@ -259,7 +259,7 @@ class SystemParameterSerializer(serializers.ModelSerializer):
             'rent_deposit_months', 'require_water_deposit', 'require_electricity_deposit',
             'allow_partial_payments', 'auto_generate_receipts',
             'late_payment_penalty_rate', 'grace_period_days',
-            'default_service_charge', 'default_security_charge', 'default_other_charge',
+            'default_service_charge', 'default_security_charge', 'default_other_charge','electicity_unit_cost','water_unit_cost',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
