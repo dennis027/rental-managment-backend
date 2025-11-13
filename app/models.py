@@ -64,21 +64,39 @@ class Unit(models.Model):
     # 💡 Computed logic
     def recalculate_balance(self):
         """Recalculate billed, paid, and balance for this unit."""
-        from django.db.models import Sum
+        from django.db.models import Sum, F
 
-        total_billed = self.contracts.filter(is_active=True)\
-            .values_list("receipts__total_amount", flat=True)
-        total_billed = sum(total_billed) if total_billed else 0
+        # Calculate total_billed by summing all receipt components
+        total_billed = (
+            Receipt.objects.filter(contract__unit=self, contract__is_active=True)
+            .aggregate(
+                total=Sum(
+                    F("monthly_rent") +
+                    F("rental_deposit") +
+                    F("electricity_deposit") +
+                    F("electricity_bill") +
+                    F("water_deposit") +
+                    F("water_bill") +
+                    F("service_charge") +
+                    F("security_charge") +
+                    F("previous_balance") +
+                    F("other_charges")
+                )
+            )["total"]
+            or 0
+        )
 
-        total_paid = self.contracts.filter(is_active=True)\
-            .values_list("receipts__amount_paid", flat=True)
-        total_paid = sum(total_paid) if total_paid else 0
+        # Calculate total_paid by summing amount_paid from receipts
+        total_paid = (
+            Receipt.objects.filter(contract__unit=self, contract__is_active=True)
+            .aggregate(total=Sum("amount_paid"))["total"]
+            or 0
+        )
 
         self.total_billed = total_billed
         self.total_paid = total_paid
-        self.balance = total_billed - total_paid  # + means debt, - means overpayment
+        self.balance = total_billed - total_paid
         self.save(update_fields=["total_billed", "total_paid", "balance"])
-
 
 # customer details 
 
