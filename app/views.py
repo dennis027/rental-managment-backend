@@ -24,6 +24,10 @@ from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceReque
 from rest_framework import viewsets
 from django.utils.timezone import now
 from django.db.models import Count, Sum, Avg,Q
+from decimal import Decimal
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 
 
 
@@ -985,12 +989,11 @@ class RentalContractCancel(APIView):
         # Free up the unit
         unit = contract.unit
         unit.status = "vacant"
-        unit = self.unit
-        unit.balance = 0
-        unit.save(update_fields=["balance"])
-        unit.save()
+        unit.balance = 0  # Reset balance when contract is cancelled
+        unit.save(update_fields=["status", "balance"])
 
         return Response({"message": f"Contract {contract.contract_number} has been cancelled."})
+
 
 
 class RentalContractDetail(APIView):
@@ -1291,3 +1294,221 @@ class PropertySystemParameterView(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+#######################Dashbord analysts
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dashboard_summary(request):
+    """
+    Get overall dashboard summary statistics
+    """
+    property_id = request.query_params.get('property_id')
+    
+    # Filter by property if provided
+    units_query = Unit.objects.all()
+    contracts_query = RentalContract.objects.all()
+    receipts_query = Receipt.objects.all()
+    
+    if property_id:
+        units_query = units_query.filter(property_id=property_id)
+        contracts_query = contracts_query.filter(unit__property_id=property_id)
+        receipts_query = receipts_query.filter(contract__unit__property_id=property_id)
+    
+    # Total tenants (active contracts)
+    total_tenants = contracts_query.filter(is_active=True).values('customer').distinct().count()
+    
+    # Occupied units
+    occupied_units = units_query.filter(status='occupied').count()
+    total_units = units_query.count()
+    
+    # Pending rent (unpaid + partial receipts)
+    pending_rent = receipts_query.filter(
+        Q(status='unpaid') | Q(status='partial'),
+        contract__is_active=True
+    ).aggregate(
+        total=Sum('monthly_rent') + Sum('electricity_bill') + Sum('water_bill') + 
+              Sum('service_charge') + Sum('security_charge') + Sum('other_charges') - Sum('amount_paid')
+    )['total'] or Decimal('0.00')
+    
+    # Contracts expiring in next 30 days
+    thirty_days_from_now = timezone.now().date() + timedelta(days=30)
+    expiring_contracts = contracts_query.filter(
+        is_active=True,
+        end_date__lte=thirty_days_from_now,
+        end_date__gte=timezone.now().date()
+    ).count()
+    
+    # Vacant units
+    vacant_units = units_query.filter(status='vacant').count()
+    
+    # Total collected this month
+    current_month = timezone.now().month
+    current_year = timezone.now().year
+    monthly_collection = Payment.objects.filter(
+        payment_date__month=current_month,
+        payment_date__year=current_year
+    )
+    if property_id:
+        monthly_collection = monthly_collection.filter(
+            receipt__contract__unit__property_id=property_id
+        )
+    monthly_collection = monthly_collection.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    
+    return Response({
+        'total_tenants': total_tenants,
+        'occupied_units': occupied_units,
+        'total_units': total_units,
+        'vacant_units': vacant_units,
+        'pending_rent': float(pending_rent),
+        'contracts_expiring': expiring_contracts,
+        'monthly_collection': float(monthly_collection),
+        'occupancy_rate': round((occupied_units / total_units * 100) if total_units > 0 else 0, 2)
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def monthly_rent_collection(request):
+    """
+    Get monthly rent collection for the last 6-12 months
+    """
+    property_id = request.query_params.get('property_id')
+    months = int(request.query_params.get('months', 6))  # Default 6 months
+    
+    data = []
+    current_date = timezone.now().date()
+    
+    for i in range(months - 1, -1, -1):
+        target_date = current_date - timedelta(days=30 * i)
+        month = target_date.month
+        year = target_date.year
+        
+        payments = Payment.objects.filter(
+            payment_date__month=month,
+            payment_date__year=year
+        )
+        
+        if property_id:
+            payments = payments.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+        
+        total = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        data.append({
+            'month': target_date.strftime('%b'),
+            'year': year,
+            'amount': float(total)
+        })
+    
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def occupancy_stats(request):
+    """
+    Get occupancy statistics (occupied vs vacant units)
+    """
+    property_id = request.query_params.get('property_id')
+    
+    units_query = Unit.objects.all()
+    if property_id:
+        units_query = units_query.filter(property_id=property_id)
+    
+    occupied = units_query.filter(status='occupied').count()
+    vacant = units_query.filter(status='vacant').count()
+    
+    return Response({
+        'occupied': occupied,
+        'vacant': vacant,
+        'total': occupied + vacant,
+        'occupancy_percentage': round((occupied / (occupied + vacant) * 100) if (occupied + vacant) > 0 else 0, 2)
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def payment_methods_breakdown(request):
+    """
+    Get breakdown of payments by method (Cash, M-Pesa, Bank)
+    """
+    property_id = request.query_params.get('property_id')
+    
+    # Get current month or specify date range
+    current_month = timezone.now().month
+    current_year = timezone.now().year
+    
+    payments = Payment.objects.filter(
+        payment_date__month=current_month,
+        payment_date__year=current_year
+    )
+    
+    if property_id:
+        payments = payments.filter(
+            receipt__contract__unit__property_id=property_id
+        )
+    
+    # Group by method
+    cash = payments.filter(method='cash').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    mpesa = payments.filter(method='mpesa').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    bank = payments.filter(method='bank').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    
+    return Response({
+        'cash': float(cash),
+        'mpesa': float(mpesa),
+        'bank': float(bank),
+        'total': float(cash + mpesa + bank)
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def revenue_vs_expenses(request):
+    """
+    Get revenue vs expenses for the last 6 months
+    """
+    property_id = request.query_params.get('property_id')
+    months = int(request.query_params.get('months', 6))
+    
+    data = []
+    current_date = timezone.now().date()
+    
+    for i in range(months - 1, -1, -1):
+        target_date = current_date - timedelta(days=30 * i)
+        month = target_date.month
+        year = target_date.year
+        
+        # Revenue (payments)
+        payments = Payment.objects.filter(
+            payment_date__month=month,
+            payment_date__year=year
+        )
+        
+        # Expenses
+        expenses = Expense.objects.filter(
+            expense_date__month=month,
+            expense_date__year=year
+        )
+        
+        if property_id:
+            payments = payments.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+            expenses = expenses.filter(property_id=property_id)
+        
+        revenue = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        expense_total = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        data.append({
+            'month': target_date.strftime('%b'),
+            'year': year,
+            'revenue': float(revenue),
+            'expenses': float(expense_total),
+            'profit': float(revenue - expense_total)
+        })
+    
+    return Response(data)

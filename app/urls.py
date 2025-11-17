@@ -5,6 +5,8 @@ from .views import ActivateAccountView, ContractSearchView, CustomerDetail, Cust
 from django.conf import settings
 from django.conf.urls.static import static
 
+from app import views
+
 urlpatterns = [
     path("api/register/", RegisterView.as_view(), name="register"),  
     path("api/login/", LoginView.as_view(), name="login"),
@@ -59,6 +61,14 @@ urlpatterns = [
 
 
      path("api/properties/<int:property_id>/system-parameters/", PropertySystemParameterView.as_view(), name="property-system-parameters"),
+
+
+         # Dashboard APIs
+    path('api/dashboard/summary/', views.dashboard_summary, name='dashboard-summary'),
+    path('api/dashboard/monthly-collection/', views.monthly_rent_collection, name='monthly-collection'),
+    path('api/dashboard/occupancy/', views.occupancy_stats, name='occupancy-stats'),
+    path('api/dashboard/payment-methods/', views.payment_methods_breakdown, name='payment-methods'),
+    path('api/dashboard/revenue-expenses/', views.revenue_vs_expenses, name='revenue-expenses'),
 
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

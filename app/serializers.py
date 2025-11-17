@@ -113,12 +113,19 @@ class PropertySerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class UnitSerializer(serializers.ModelSerializer):
-
     property_name = serializers.CharField(source="property.name", read_only=True)
+    active_contract_deposit = serializers.SerializerMethodField()
 
     class Meta:
         model = Unit
         fields = "__all__"
+        extra_fields = ["active_contract_deposit"]
+
+    def get_active_contract_deposit(self, unit):
+        contract = unit.contracts.filter(is_active=True).first()
+        if contract:
+            return contract.deposit_amount
+        return 0
 
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
@@ -144,6 +151,12 @@ class RentalContractSerializer(serializers.ModelSerializer):
         return None
 
 class PaymentSerializer(serializers.ModelSerializer):
+
+    unit_id = serializers.IntegerField(source="receipt.contract.unit.id", read_only=True)
+    unit_number = serializers.CharField(source="receipt.contract.unit.unit_number", read_only=True)
+
+    property_id = serializers.IntegerField(source="receipt.contract.unit.property.id", read_only=True)
+    property_name = serializers.CharField(source="receipt.contract.unit.property.name", read_only=True)
     class Meta:
         model = Payment
         fields = "__all__"
@@ -196,6 +209,7 @@ class ReceiptSerializer(serializers.ModelSerializer):
     customer = serializers.CharField(source="contract.customer.first_name", read_only=True)
     total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     contract_number = serializers.CharField(source="contract.contract_number", read_only=True)
+    balance = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     class Meta:
         model = Receipt
         fields = [
@@ -224,6 +238,7 @@ class ReceiptSerializer(serializers.ModelSerializer):
             "previous_electricity_reading",
             "current_electricity_reading",
             "total_amount",
+            "balance",
         ]
 
         read_only_fields = ["receipt_number", "issue_date", "total_amount", "issued_by"]

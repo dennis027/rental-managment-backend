@@ -1,5 +1,5 @@
 from django.contrib.auth.models import AbstractUser
-from django.db import models,IntegrityError,DatabaseError
+from django.db import models, IntegrityError, DatabaseError
 import uuid
 from django.utils import timezone
 
@@ -20,8 +20,11 @@ class Property(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)  
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
+    
     def __str__(self):
         return self.name
+
+
 class Unit(models.Model):
     class UnitType(models.TextChoices):
         SINGLE = "single", "Single"
@@ -45,7 +48,7 @@ class Unit(models.Model):
     water_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     electricity_meter_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
-    # 🧾 new fields
+    # 🧾 Balance tracking fields
     total_billed = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     total_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
@@ -61,59 +64,63 @@ class Unit(models.Model):
     def __str__(self):
         return f"{self.property.name} - {self.unit_number} ({self.get_unit_type_display()})"
 
-    # 💡 Computed logic
     def recalculate_balance(self):
-        """Recalculate billed, paid, and balance for this unit."""
-        from django.db.models import Sum, F
+        """Recalculate total billed, total paid, and balance for this unit."""
+        from django.db.models import Sum
 
-        # Calculate total_billed by summing all receipt components
+        receipts = Receipt.objects.filter(contract__unit=self, contract__is_active=True)
+
+        if not receipts.exists():
+            # No receipts at all
+            self.total_billed = 0
+            self.total_paid = 0
+            self.balance = 0
+            self.save(update_fields=["total_billed", "total_paid", "balance"])
+            return
+
+        # ✅ Calculate total billed by summing all financial components individually
         total_billed = (
-            Receipt.objects.filter(contract__unit=self, contract__is_active=True)
-            .aggregate(
-                total=Sum(
-                    F("monthly_rent") +
-                    F("rental_deposit") +
-                    F("electricity_deposit") +
-                    F("electricity_bill") +
-                    F("water_deposit") +
-                    F("water_bill") +
-                    F("service_charge") +
-                    F("security_charge") +
-                    F("previous_balance") +
-                    F("other_charges")
+            receipts.aggregate(
+                total=(
+                    Sum("monthly_rent")
+                    + Sum("rental_deposit")
+                    + Sum("electricity_deposit")
+                    + Sum("electricity_bill")
+                    + Sum("water_deposit")
+                    + Sum("water_bill")
+                    + Sum("service_charge")
+                    + Sum("security_charge")
+                    + Sum("previous_balance")
+                    + Sum("other_charges")
                 )
             )["total"]
             or 0
         )
 
-        # Calculate total_paid by summing amount_paid from receipts
-        total_paid = (
-            Receipt.objects.filter(contract__unit=self, contract__is_active=True)
-            .aggregate(total=Sum("amount_paid"))["total"]
-            or 0
-        )
+        # ✅ Calculate total paid
+        total_paid = receipts.aggregate(total=Sum("amount_paid"))["total"] or 0
 
+        # ✅ Update the unit
         self.total_billed = total_billed
         self.total_paid = total_paid
         self.balance = total_billed - total_paid
         self.save(update_fields=["total_billed", "total_paid", "balance"])
 
-# customer details 
 
+# Customer ID upload path
 def customer_id_upload_path(instance, filename):
-    # Store files like: media/customer_ids/<id_number>/<front_or_back>.jpg
     return f"customer_ids/{instance.id_number}/{filename}"
+
 
 class Customer(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
-    phone_number = models.CharField(max_length=20, unique=True)   # must be unique
-    email = models.EmailField(blank=True, null=True, unique=True) # must be unique if given
-    id_number = models.CharField(max_length=50, unique=True)      # must be unique
+    phone_number = models.CharField(max_length=20, unique=True)
+    email = models.EmailField(blank=True, null=True, unique=True)
+    id_number = models.CharField(max_length=50, unique=True)
     id_photo_front = models.ImageField(upload_to=customer_id_upload_path, null=True, blank=True)
     id_photo_back = models.ImageField(upload_to=customer_id_upload_path, null=True, blank=True)
     
-    # Unit can be assigned later → OneToOne but nullable
     unit = models.OneToOneField(Unit, on_delete=models.SET_NULL, null=True, blank=True, related_name="tenant")
     
     move_in_date = models.DateField(null=True, blank=True)
@@ -123,7 +130,6 @@ class Customer(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.phone_number})"
-    
 
 
 class RentalContract(models.Model):
@@ -148,7 +154,6 @@ class RentalContract(models.Model):
             base_number = f"CTR-{self.customer.id}-{self.unit.id}-{int(self.start_date.strftime('%Y%m%d'))}"
             contract_number = base_number
 
-            # Ensure uniqueness
             counter = 1
             while RentalContract.objects.filter(contract_number=contract_number).exists():
                 contract_number = f"{base_number}-{counter}"
@@ -162,69 +167,13 @@ class RentalContract(models.Model):
         return f"{self.contract_number} → {self.customer} ({self.unit})"
 
 
-class Payment(models.Model):
-    receipt = models.ForeignKey("Receipt", on_delete=models.CASCADE, related_name="payments")
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    payment_date = models.DateField(auto_now_add=True)
-    method = models.CharField(
-        max_length=20,
-        choices=[
-            ("cash", "Cash"),
-            ("mpesa", "M-Pesa"),
-            ("bank", "Bank Transfer"),
-        ],
-        default="cash"
-    )
-    reference = models.CharField(max_length=100, blank=True, null=True, unique=True)  # Prevent duplicates
-    notes = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-def save(self, *args, **kwargs):
-    super().save(*args, **kwargs)
-
-    # Update receipt totals
-    self.receipt.amount_paid += self.amount
-    self.receipt.save(update_fields=["amount_paid"])
-    self.receipt.update_status()
-
-    # Update unit balance
-    unit = self.receipt.contract.unit
-    unit.recalculate_balance()
-
-
-
-class Expense(models.Model):
-    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="expenses")
-    description = models.TextField()
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    expense_date = models.DateField(auto_now_add=True)
-    recorded_by = models.ForeignKey("CustomUser", on_delete=models.SET_NULL, null=True, blank=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"Expense {self.amount} for {self.property.name} ({self.expense_date})"
-    
-
-
-
-class MaintenanceRequest(models.Model):
-    unit = models.ForeignKey(Unit, on_delete=models.CASCADE, related_name="maintenance_requests")
-    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name="requests")
-    description = models.TextField()
-    status = models.CharField(
-        max_length=20,
-        choices=[("pending", "Pending"), ("in_progress", "In Progress"), ("resolved", "Resolved")],
-        default="pending"
-    )
-    reported_date = models.DateTimeField(auto_now_add=True)
-    resolved_date = models.DateTimeField(null=True, blank=True)
-
-    def __str__(self):
-        return f"Request {self.id} - {self.unit} ({self.status})"
-
 class Receipt(models.Model):
+    STATUS_CHOICES = [
+        ('unpaid', 'Unpaid'),
+        ('partial', 'Partially Paid'),
+        ('paid', 'Fully Paid'),
+    ]
+
     contract = models.ForeignKey(
         "RentalContract",
         on_delete=models.CASCADE,
@@ -237,13 +186,6 @@ class Receipt(models.Model):
         blank=True,
         related_name="issued_receipts"
     )
-
-    STATUS_CHOICES = [
-        ('unpaid', 'Unpaid'),
-        ('partial', 'Partially Paid'),
-        ('paid', 'Fully Paid'),
-    ]
-
 
     # Core financial fields
     monthly_rent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -268,85 +210,19 @@ class Receipt(models.Model):
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='unpaid')
     is_paid = models.BooleanField(default=False)
-
     issue_date = models.DateTimeField(default=timezone.now)
 
     def save(self, *args, **kwargs):
-        if not self.receipt_number:
-            today = timezone.now().strftime("%Y%m%d")
-            count = Receipt.objects.filter(contract=self.contract).count() + 1
-            self.receipt_number = f"RCT-{self.contract.id}-{today}-{count}"
-        super().save(*args, **kwargs)
-
-    @property
-    def total_amount(self):
-        return (
-            self.monthly_rent +
-            self.rental_deposit +
-            self.electricity_deposit +
-            self.electricity_bill +
-            self.water_deposit +
-            self.water_bill +
-            self.service_charge +
-            self.security_charge +
-            self.previous_balance +
-            self.other_charges
-        )
-
-    def __str__(self):
-        return f"Receipt {self.receipt_number} - Contract {self.contract.contract_number}"
-
-    contract = models.ForeignKey(
-        "RentalContract",
-        on_delete=models.CASCADE,
-        related_name="receipts"
-    )
-    issued_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="issued_receipts"
-    )
-
-    # Core financial fields
-    monthly_rent = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    rental_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    electricity_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    electricity_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    water_deposit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    water_bill = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    previous_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    other_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-
-    # Meter readings
-    previous_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    current_water_reading = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-
-    # Auto-generated fields
-    receipt_number = models.CharField(max_length=50, unique=True, editable=False)
-    issue_date = models.DateTimeField(default=timezone.now)
-
-    def save(self, *args, **kwargs):
-        # Automatically link unit and property from the contract
-        if self.contract:
-            self.unit = self.contract.unit
-            self.property = self.contract.unit.property
-
         # If issue_date is not set, default to now
         if not self.issue_date:
             self.issue_date = timezone.now()
 
         # Generate a unique receipt number based on issue_date (month + year)
         if not self.receipt_number:
-            # Use issue_date to extract target year and month
             issue_year = self.issue_date.year
             issue_month = self.issue_date.month
-            formatted_month = f"{issue_month:02d}"  # ensure 09 instead of 9
+            formatted_month = f"{issue_month:02d}"
 
-            # Filter receipts of same contract and same year-month
             count = (
                 Receipt.objects.filter(
                     contract=self.contract,
@@ -355,23 +231,22 @@ class Receipt(models.Model):
                 ).count() + 1
             )
 
-            # Generate code using the year-month (YYYYMM)
             self.receipt_number = f"RCT-{self.contract.id}-{issue_year}{formatted_month}-{count}"
 
         # Safety net for unique constraint
         try:
             super().save(*args, **kwargs)
         except IntegrityError:
-            count = (
-                Receipt.objects.filter(contract=self.contract).count() + 1
-            )
+            count = Receipt.objects.filter(contract=self.contract).count() + 1
             issue_year = self.issue_date.year
             issue_month = self.issue_date.month
             formatted_month = f"{issue_month:02d}"
             self.receipt_number = f"RCT-{self.contract.id}-{issue_year}{formatted_month}-{count}"
             super().save(*args, **kwargs)
 
-        
+        # 🔥 Recalculate unit balance after saving receipt
+        self.contract.unit.recalculate_balance()
+
     def update_status(self):
         """Automatically update payment status and is_paid based on totals."""
         total = self.total_amount
@@ -387,7 +262,6 @@ class Receipt(models.Model):
             self.is_paid = True
 
         self.save(update_fields=["status", "is_paid"])
-
 
     @property
     def total_amount(self):
@@ -406,10 +280,73 @@ class Receipt(models.Model):
 
     def __str__(self):
         return f"Receipt {self.receipt_number} - Contract {self.contract.contract_number}"
+    
+
+    @property
+    def balance(self):
+        """Balance remaining for this single receipt."""
+        return self.total_amount - self.amount_paid
 
 
+class Payment(models.Model):
+    receipt = models.ForeignKey("Receipt", on_delete=models.CASCADE, related_name="payments")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    payment_date = models.DateField(auto_now_add=True)
+    method = models.CharField(
+        max_length=20,
+        choices=[
+            ("cash", "Cash"),
+            ("mpesa", "M-Pesa"),
+            ("bank", "Bank Transfer"),
+        ],
+        default="cash"
+    )
+    reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
-# ######system params
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+
+        # Update receipt totals
+        self.receipt.amount_paid += self.amount
+        self.receipt.save(update_fields=["amount_paid"])
+        self.receipt.update_status()
+
+        # Update unit balance
+        unit = self.receipt.contract.unit
+        unit.recalculate_balance()
+
+
+class Expense(models.Model):
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="expenses")
+    description = models.TextField()
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    expense_date = models.DateField(auto_now_add=True)
+    recorded_by = models.ForeignKey("CustomUser", on_delete=models.SET_NULL, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Expense {self.amount} for {self.property.name} ({self.expense_date})"
+
+
+class MaintenanceRequest(models.Model):
+    unit = models.ForeignKey(Unit, on_delete=models.CASCADE, related_name="maintenance_requests")
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name="requests")
+    description = models.TextField()
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("in_progress", "In Progress"), ("resolved", "Resolved")],
+        default="pending"
+    )
+    reported_date = models.DateTimeField(auto_now_add=True)
+    resolved_date = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Request {self.id} - {self.unit} ({self.status})"
+
 
 class SystemParameter(models.Model):
     property = models.OneToOneField(
@@ -418,19 +355,19 @@ class SystemParameter(models.Model):
         related_name="system_parameters"
     )
 
-    #  Bill inclusions
+    # Bill inclusions
     has_water_bill = models.BooleanField(default=True)
     has_electricity_bill = models.BooleanField(default=True)
     has_service_charge = models.BooleanField(default=True)
     has_security_charge = models.BooleanField(default=False)
     has_other_charges = models.BooleanField(default=False)
 
-    #  Deposit configuration
+    # Deposit configuration
     rent_deposit_months = models.PositiveIntegerField(default=1)
     require_water_deposit = models.BooleanField(default=False)
     require_electricity_deposit = models.BooleanField(default=False)
 
-    #  Optional settings
+    # Optional settings
     allow_partial_payments = models.BooleanField(default=True)
     auto_generate_receipts = models.BooleanField(default=False)
     late_payment_penalty_rate = models.DecimalField(
@@ -439,7 +376,7 @@ class SystemParameter(models.Model):
     )
     grace_period_days = models.PositiveIntegerField(default=5)
 
-    #  Default fees (optional)
+    # Default fees (optional)
     default_service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     default_security_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     default_other_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
