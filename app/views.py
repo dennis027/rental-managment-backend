@@ -23,7 +23,7 @@ from .models import Customer, Expense, MaintenanceRequest, Payment, Property, Re
 from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, ReceiptSerializer, RentalContractSerializer, SystemParameterSerializer, UnitSerializer
 from rest_framework import viewsets
 from django.utils.timezone import now
-from django.db.models import Count, Sum, Avg,Q
+from django.db.models import Count, Sum, Avg,Q,Min,Max, F, DecimalField, ExpressionWrapper
 from decimal import Decimal
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -738,7 +738,7 @@ class LogoutView(generics.GenericAPIView):
 
 # ----------------- Property APIs -----------------
 class PropertyListCreate(APIView):
-    permission_classes = [IsAuthenticated]
+    # permission_classes = [IsAuthenticated]
 
     def get(self, request):
         properties = Property.objects.all().order_by("-created_at")
@@ -1512,3 +1512,1876 @@ def revenue_vs_expenses(request):
         })
     
     return Response(data)
+
+
+
+
+
+# reports haha
+
+
+class BaseReportView(APIView):
+    """Base class with common filtering logic"""
+    permission_classes = [IsAuthenticated]
+    
+    def get_date_range(self, request):
+        """Extract and validate date range from query params"""
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        
+        if start_date:
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        else:
+            start_date = (timezone.now() - timedelta(days=30)).date()
+            
+        if end_date:
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        else:
+            end_date = timezone.now().date()
+            
+        return start_date, end_date
+    
+    def get_property_filter(self, request):
+        """Get property filter from query params"""
+        property_id = request.query_params.get('property_id')
+        if property_id:
+            return Q(property_id=property_id)
+        return Q()
+
+
+# ==================== FINANCIAL REPORTS ====================
+
+class TotalRevenueReportView(BaseReportView):
+    """
+    Total revenue with breakdown by property, payment method, and date range
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        
+        properties = Property.objects.filter(is_active=True)
+        
+        comparison_data = []
+        
+        for prop in properties:
+            # Units
+            units = Unit.objects.filter(property=prop)
+            total_units = units.count()
+            occupied = units.filter(status='occupied').count()
+            occupancy_rate = (occupied / total_units * 100) if total_units > 0 else 0
+            
+            # Revenue
+            revenue = Payment.objects.filter(
+                receipt__contract__unit__property=prop,
+                payment_date__range=[start_date, end_date]
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            
+            # Expenses
+            expenses = Expense.objects.filter(
+                property=prop,
+                expense_date__range=[start_date, end_date]
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            
+            # Outstanding
+            outstanding = units.aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+            
+            # Active contracts
+            active_contracts = RentalContract.objects.filter(
+                unit__property=prop,
+                is_active=True
+            ).count()
+            
+            # Expected revenue
+            expected = RentalContract.objects.filter(
+                unit__property=prop,
+                is_active=True
+            ).aggregate(total=Sum('rent_amount'))['total'] or Decimal('0.00')
+            
+            # Collection rate
+            collection_rate = (revenue / expected * 100) if expected > 0 else 0
+            
+            comparison_data.append({
+                'property_id': prop.id,
+                'property_name': prop.name,
+                'address': prop.address,
+                'units': {
+                    'total': total_units,
+                    'occupied': occupied,
+                    'vacant': total_units - occupied,
+                    'occupancy_rate': round(occupancy_rate, 2)
+                },
+                'financial': {
+                    'revenue': revenue,
+                    'expenses': expenses,
+                    'net_profit': revenue - expenses,
+                    'outstanding': outstanding,
+                    'expected_monthly_revenue': expected,
+                    'collection_rate': round(collection_rate, 2)
+                },
+                'contracts': {
+                    'active': active_contracts
+                }
+            })
+        
+        # Overall totals
+        totals = {
+            'total_properties': len(comparison_data),
+            'total_units': sum(p['units']['total'] for p in comparison_data),
+            'total_occupied': sum(p['units']['occupied'] for p in comparison_data),
+            'total_revenue': sum(p['financial']['revenue'] for p in comparison_data),
+            'total_expenses': sum(p['financial']['expenses'] for p in comparison_data),
+            'total_outstanding': sum(p['financial']['outstanding'] for p in comparison_data)
+        }
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'totals': totals,
+            'properties': comparison_data
+        })
+        property_id = request.query_params.get('property_id')
+        
+        # Base query
+        payments_query = Payment.objects.filter(
+            payment_date__range=[start_date, end_date]
+        ).select_related('receipt__contract__unit__property')
+        
+        # Apply property filter
+        if property_id:
+            payments_query = payments_query.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+        
+        # Total revenue
+        total_revenue = payments_query.aggregate(
+            total=Sum('amount')
+        )['total'] or Decimal('0.00')
+        
+        # Revenue by property
+        revenue_by_property = payments_query.values(
+            'receipt__contract__unit__property__id',
+            'receipt__contract__unit__property__name'
+        ).annotate(
+            total_revenue=Sum('amount'),
+            payment_count=Count('id')
+        ).order_by('-total_revenue')
+        
+        # Revenue by payment method
+        revenue_by_method = payments_query.values('method').annotate(
+            total=Sum('amount'),
+            count=Count('id')
+        ).order_by('-total')
+        
+        # Monthly breakdown
+        monthly_revenue = payments_query.extra(
+            select={'month': "DATE_TRUNC('month', payment_date)"}
+        ).values('month').annotate(
+            total=Sum('amount')
+        ).order_by('month')
+        
+        return Response({
+            'period': {
+                'start_date': start_date,
+                'end_date': end_date
+            },
+            'total_revenue': total_revenue,
+            'revenue_by_property': revenue_by_property,
+            'revenue_by_method': revenue_by_method,
+            'monthly_breakdown': monthly_revenue
+        })
+
+
+class OutstandingBalancesReportView(BaseReportView):
+    """
+    All units with outstanding balances
+    Query params: ?property_id=1&min_balance=1000&status=occupied
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        min_balance = request.query_params.get('min_balance', 0)
+        unit_status = request.query_params.get('status')  # vacant/occupied
+        
+        # Base query - units with balance > 0
+        units_query = Unit.objects.filter(
+            balance__gt=0
+        ).select_related('property', 'tenant')
+        
+        # Apply filters
+        if property_id:
+            units_query = units_query.filter(property_id=property_id)
+        
+        if min_balance:
+            units_query = units_query.filter(balance__gte=Decimal(min_balance))
+        
+        if unit_status:
+            units_query = units_query.filter(status=unit_status)
+        
+        # Get detailed info
+        outstanding_units = units_query.values(
+            'id',
+            'unit_number',
+            'property__name',
+            'tenant__first_name',
+            'tenant__last_name',
+            'tenant__phone_number',
+            'balance',
+            'total_billed',
+            'total_paid',
+            'status'
+        ).order_by('-balance')
+        
+        # Summary statistics
+        summary = units_query.aggregate(
+            total_outstanding=Sum('balance'),
+            total_units=Count('id'),
+            avg_balance=Avg('balance')
+        )
+        
+        # Breakdown by property
+        by_property = units_query.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            outstanding=Sum('balance'),
+            unit_count=Count('id')
+        ).order_by('-outstanding')
+        
+        return Response({
+            'summary': summary,
+            'by_property': by_property,
+            'units': outstanding_units
+        })
+
+
+class PaymentCollectionReportView(BaseReportView):
+    """
+    Payment collections over time with trends
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31&group_by=day
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        group_by = request.query_params.get('group_by', 'day')  # day, week, month
+        
+        # Base query
+        payments = Payment.objects.filter(
+            payment_date__range=[start_date, end_date]
+        ).select_related('receipt__contract__unit__property')
+        
+        if property_id:
+            payments = payments.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+        
+        # Group by period
+        if group_by == 'day':
+            trunc_func = "DATE_TRUNC('day', payment_date)"
+        elif group_by == 'week':
+            trunc_func = "DATE_TRUNC('week', payment_date)"
+        else:  # month
+            trunc_func = "DATE_TRUNC('month', payment_date)"
+        
+        collections = payments.extra(
+            select={'period': trunc_func}
+        ).values('period').annotate(
+            total_collected=Sum('amount'),
+            transaction_count=Count('id'),
+            avg_payment=Avg('amount')
+        ).order_by('period')
+        
+        # Payment method breakdown
+        by_method = payments.values('method').annotate(
+            total=Sum('amount'),
+            count=Count('id')
+        )
+        
+        # Top payers
+        top_payers = payments.values(
+            'receipt__contract__customer__first_name',
+            'receipt__contract__customer__last_name',
+            'receipt__contract__customer__phone_number'
+        ).annotate(
+            total_paid=Sum('amount'),
+            payment_count=Count('id')
+        ).order_by('-total_paid')[:10]
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'collections': collections,
+            'by_method': by_method,
+            'top_payers': top_payers
+        })
+
+
+class RentRollReportView(BaseReportView):
+    """
+    Current rent roll - all active contracts
+    Query params: ?property_id=1&unit_type=one_bedroom
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        unit_type = request.query_params.get('unit_type')
+        
+        # Active contracts
+        contracts = RentalContract.objects.filter(
+            is_active=True
+        ).select_related(
+            'customer', 'unit__property'
+        )
+        
+        if property_id:
+            contracts = contracts.filter(unit__property_id=property_id)
+        
+        if unit_type:
+            contracts = contracts.filter(unit__unit_type=unit_type)
+        
+        # Detailed rent roll
+        rent_roll = contracts.values(
+            'contract_number',
+            'customer__first_name',
+            'customer__last_name',
+            'customer__phone_number',
+            'unit__unit_number',
+            'unit__property__name',
+            'unit__unit_type',
+            'rent_amount',
+            'start_date',
+            'end_date',
+            'unit__balance'
+        ).order_by('unit__property__name', 'unit__unit_number')
+        
+        # Summary
+        summary = contracts.aggregate(
+            total_units=Count('id'),
+            total_monthly_rent=Sum('rent_amount'),
+            total_outstanding=Sum('unit__balance')
+        )
+        
+        # By property
+        by_property = contracts.values(
+            'unit__property__id',
+            'unit__property__name'
+        ).annotate(
+            unit_count=Count('id'),
+            monthly_rent=Sum('rent_amount'),
+            outstanding=Sum('unit__balance')
+        ).order_by('unit__property__name')
+        
+        return Response({
+            'summary': summary,
+            'by_property': by_property,
+            'rent_roll': rent_roll
+        })
+
+
+class DepositTrackingReportView(BaseReportView):
+    """
+    Track all deposits collected and status
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        # Get all receipts with deposits in date range
+        receipts = Receipt.objects.filter(
+            issue_date__range=[start_date, end_date]
+        ).filter(
+            Q(rental_deposit__gt=0) | 
+            Q(water_deposit__gt=0) | 
+            Q(electricity_deposit__gt=0)
+        ).select_related('contract__customer', 'contract__unit__property')
+        
+        if property_id:
+            receipts = receipts.filter(contract__unit__property_id=property_id)
+        
+        # Calculate totals
+        deposit_summary = receipts.aggregate(
+            total_rental_deposits=Sum('rental_deposit'),
+            total_water_deposits=Sum('water_deposit'),
+            total_electricity_deposits=Sum('electricity_deposit')
+        )
+        
+        # Add grand total
+        deposit_summary['grand_total'] = sum([
+            deposit_summary['total_rental_deposits'] or 0,
+            deposit_summary['total_water_deposits'] or 0,
+            deposit_summary['total_electricity_deposits'] or 0
+        ])
+        
+        # Detailed breakdown
+        deposits_detail = receipts.values(
+            'contract__customer__first_name',
+            'contract__customer__last_name',
+            'contract__unit__unit_number',
+            'contract__unit__property__name',
+            'rental_deposit',
+            'water_deposit',
+            'electricity_deposit',
+            'issue_date',
+            'contract__is_active'
+        ).order_by('-issue_date')
+        
+        # By property
+        by_property = receipts.values(
+            'contract__unit__property__id',
+            'contract__unit__property__name'
+        ).annotate(
+            rental_deposits=Sum('rental_deposit'),
+            water_deposits=Sum('water_deposit'),
+            electricity_deposits=Sum('electricity_deposit')
+        ).order_by('contract__unit__property__name')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': deposit_summary,
+            'by_property': by_property,
+            'deposits': deposits_detail
+        })
+
+
+class ExpenseAnalysisReportView(BaseReportView):
+    """
+    Expense analysis by property and time period
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        # Base query
+        expenses = Expense.objects.filter(
+            expense_date__range=[start_date, end_date]
+        ).select_related('property', 'recorded_by')
+        
+        if property_id:
+            expenses = expenses.filter(property_id=property_id)
+        
+        # Summary
+        summary = expenses.aggregate(
+            total_expenses=Sum('amount'),
+            expense_count=Count('id'),
+            avg_expense=Avg('amount')
+        )
+        
+        # By property
+        by_property = expenses.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            total=Sum('amount'),
+            count=Count('id')
+        ).order_by('-total')
+        
+        # Monthly trend
+        monthly = expenses.extra(
+            select={'month': "DATE_TRUNC('month', expense_date)"}
+        ).values('month').annotate(
+            total=Sum('amount'),
+            count=Count('id')
+        ).order_by('month')
+        
+        # Detailed expenses
+        expense_list = expenses.values(
+            'id',
+            'property__name',
+            'description',
+            'amount',
+            'expense_date',
+            'recorded_by__username'
+        ).order_by('-expense_date')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': summary,
+            'by_property': by_property,
+            'monthly_trend': monthly,
+            'expenses': expense_list
+        })
+
+
+class ProfitLossReportView(BaseReportView):
+    """
+    Profit & Loss statement
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        # Income (Payments)
+        payments = Payment.objects.filter(
+            payment_date__range=[start_date, end_date]
+        )
+        if property_id:
+            payments = payments.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+        
+        total_income = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Expenses
+        expenses = Expense.objects.filter(
+            expense_date__range=[start_date, end_date]
+        )
+        if property_id:
+            expenses = expenses.filter(property_id=property_id)
+        
+        total_expenses = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Net profit
+        net_profit = total_income - total_expenses
+        profit_margin = (net_profit / total_income * 100) if total_income > 0 else 0
+        
+        # Breakdown by property if no filter
+        if not property_id:
+            by_property = []
+            properties = Property.objects.filter(is_active=True)
+            
+            for prop in properties:
+                prop_income = Payment.objects.filter(
+                    payment_date__range=[start_date, end_date],
+                    receipt__contract__unit__property=prop
+                ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+                
+                prop_expenses = Expense.objects.filter(
+                    expense_date__range=[start_date, end_date],
+                    property=prop
+                ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+                
+                by_property.append({
+                    'property_id': prop.id,
+                    'property_name': prop.name,
+                    'income': prop_income,
+                    'expenses': prop_expenses,
+                    'profit': prop_income - prop_expenses
+                })
+        else:
+            by_property = None
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'total_income': total_income,
+            'total_expenses': total_expenses,
+            'net_profit': net_profit,
+            'profit_margin_percentage': round(profit_margin, 2),
+            'by_property': by_property
+        })
+
+class DefaultersReportView(BaseReportView):
+    """
+    Tenants with overdue balances
+    Query params: ?property_id=1&min_balance=500&days_overdue=7
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        min_balance = Decimal(request.query_params.get('min_balance', '0'))
+        days_overdue = int(request.query_params.get('days_overdue', '0'))
+        
+        # Get occupied units with balances
+        units = Unit.objects.filter(
+            balance__gt=min_balance,
+            status='occupied'
+        ).select_related('property')
+        
+        if property_id:
+            units = units.filter(property_id=property_id)
+
+        defaulters = []
+
+        for unit in units:
+            # 🔥 Get active contract (correct way to get tenant)
+            active_contract = unit.contracts.filter(is_active=True).select_related("customer").first()
+            tenant = active_contract.customer if active_contract else None
+            
+            # Identify unpaid receipts
+            unpaid_receipts = Receipt.objects.filter(
+                contract__unit=unit,
+                contract__is_active=True,
+                status__in=['unpaid', 'partial']
+            ).order_by('issue_date')
+            
+            if not unpaid_receipts.exists():
+                continue
+
+            oldest_unpaid = unpaid_receipts.first()
+            days_outstanding = (timezone.now().date() - oldest_unpaid.issue_date.date()).days
+
+            if days_outstanding >= days_overdue:
+                defaulters.append({
+                    'unit_number': unit.unit_number,
+                    'property': unit.property.name,
+
+                    # 🔥 SAFE TENANT ACCESS
+                    'tenant_name': (
+                        f"{tenant.first_name} {tenant.last_name}"
+                        if tenant else "N/A"
+                    ),
+
+                    'phone': tenant.phone_number if tenant else "N/A",
+                    'balance': unit.balance,
+                    'days_overdue': days_outstanding,
+                    'oldest_unpaid_date': oldest_unpaid.issue_date
+                })
+        
+        # Sort by balance descending
+        defaulters.sort(key=lambda x: x['balance'], reverse=True)
+        
+        # Summary section
+        total_defaulters = len(defaulters)
+        total_amount_overdue = sum(item['balance'] for item in defaulters)
+
+        summary = {
+            'total_defaulters': total_defaulters,
+            'total_amount_overdue': total_amount_overdue,
+            'avg_overdue_amount': (total_amount_overdue / total_defaulters) if total_defaulters else 0
+        }
+
+        return Response({
+            'summary': summary,
+            'defaulters': defaulters
+        })
+
+class PaymentMethodAnalysisView(BaseReportView):
+    """
+    Analysis of payment methods usage
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        payments = Payment.objects.filter(
+            payment_date__range=[start_date, end_date]
+        )
+        
+        if property_id:
+            payments = payments.filter(
+                receipt__contract__unit__property_id=property_id
+            )
+        
+        # By method
+        by_method = payments.values('method').annotate(
+            total_amount=Sum('amount'),
+            transaction_count=Count('id'),
+            avg_transaction=Avg('amount')
+        ).order_by('-total_amount')
+        
+        # Calculate percentages
+        total = payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        for item in by_method:
+            item['percentage'] = (item['total_amount'] / total * 100) if total > 0 else 0
+        
+        # Trend over time
+        monthly_by_method = payments.extra(
+            select={'month': "DATE_TRUNC('month', payment_date)"}
+        ).values('month', 'method').annotate(
+            total=Sum('amount')
+        ).order_by('month', 'method')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'by_method': by_method,
+            'monthly_trend': monthly_by_method
+        })
+
+
+class RevenueForecastReportView(BaseReportView):
+    """
+    Revenue forecast based on active contracts
+    Query params: ?property_id=1&months=3
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        months = int(request.query_params.get('months', '3'))
+        
+        # Active contracts
+        contracts = RentalContract.objects.filter(is_active=True)
+        
+        if property_id:
+            contracts = contracts.filter(unit__property_id=property_id)
+        
+        # Calculate monthly forecast
+        monthly_rent = contracts.aggregate(total=Sum('rent_amount'))['total'] or Decimal('0.00')
+        
+        forecast = {
+            'expected_monthly_revenue': monthly_rent,
+            'forecast_period_months': months,
+            'total_forecast': monthly_rent * months,
+            'active_contracts': contracts.count()
+        }
+        
+        # By property
+        if not property_id:
+            by_property = contracts.values(
+                'unit__property__id',
+                'unit__property__name'
+            ).annotate(
+                monthly_rent=Sum('rent_amount'),
+                contract_count=Count('id')
+            )
+            forecast['by_property'] = by_property
+        
+        return Response(forecast)
+
+
+# ==================== OCCUPANCY & UNIT REPORTS ====================
+
+class OccupancyRateReportView(BaseReportView):
+    """
+    Occupancy rate by property
+    Query params: ?property_id=1
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        
+        units = Unit.objects.all()
+        
+        if property_id:
+            units = units.filter(property_id=property_id)
+        
+        # Overall stats
+        total_units = units.count()
+        occupied_units = units.filter(status='occupied').count()
+        vacant_units = units.filter(status='vacant').count()
+        occupancy_rate = (occupied_units / total_units * 100) if total_units > 0 else 0
+        
+        # By property
+        by_property = Unit.objects.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            total_units=Count('id'),
+            occupied=Count('id', filter=Q(status='occupied')),
+            vacant=Count('id', filter=Q(status='vacant'))
+        ).order_by('property__name')
+        
+        # Add occupancy rate to each property
+        for item in by_property:
+            item['occupancy_rate'] = (item['occupied'] / item['total_units'] * 100) if item['total_units'] > 0 else 0
+        
+        # By unit type
+        by_unit_type = units.values('unit_type').annotate(
+            total=Count('id'),
+            occupied=Count('id', filter=Q(status='occupied')),
+            vacant=Count('id', filter=Q(status='vacant'))
+        ).order_by('unit_type')
+        
+        for item in by_unit_type:
+            item['occupancy_rate'] = (item['occupied'] / item['total'] * 100) if item['total'] > 0 else 0
+        
+        return Response({
+            'overall': {
+                'total_units': total_units,
+                'occupied': occupied_units,
+                'vacant': vacant_units,
+                'occupancy_rate': round(occupancy_rate, 2)
+            },
+            'by_property': by_property,
+            'by_unit_type': by_unit_type
+        })
+
+class UnitPerformanceReportView(BaseReportView):
+    """
+    Performance metrics for each unit
+    Query params: ?property_id=1&order_by=revenue
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        order_by = request.query_params.get('order_by', 'revenue')  # revenue, balance, occupancy
+        
+        # Remove invalid tenant select_related
+        units = Unit.objects.select_related('property')
+        
+        if property_id:
+            units = units.filter(property_id=property_id)
+        
+        unit_performance = []
+        
+        for unit in units:
+            # Revenue for unit
+            revenue = Payment.objects.filter(
+                receipt__contract__unit=unit
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            
+            # Get active contract (correct way to get a tenant)
+            active_contract = unit.contracts.filter(is_active=True).select_related('customer').first()
+            tenant = active_contract.customer if active_contract else None
+            
+            unit_performance.append({
+                'unit_id': unit.id,
+                'unit_number': unit.unit_number,
+                'property': unit.property.name,
+                'unit_type': unit.get_unit_type_display(),
+                'status': unit.status,
+                'rent_amount': unit.rent_amount,
+                'total_revenue': revenue,
+                'balance': unit.balance,
+
+                # 🔥 FIXED tenant retrieval
+                'tenant': f"{tenant.first_name} {tenant.last_name}" if tenant else None,
+
+                'contract_active': bool(active_contract)
+            })
+        
+        # Sorting
+        if order_by == 'revenue':
+            unit_performance.sort(key=lambda x: x['total_revenue'], reverse=True)
+        elif order_by == 'balance':
+            unit_performance.sort(key=lambda x: x['balance'], reverse=True)
+        
+        return Response({
+            'units': unit_performance,
+            'total_units': len(unit_performance)
+        })
+
+
+class VacancyDurationReportView(BaseReportView):
+    """
+    Track how long units have been vacant
+    Query params: ?property_id=1&min_days=30
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        min_days = int(request.query_params.get('min_days', '0'))
+        
+        # Get vacant units
+        vacant_units = Unit.objects.filter(
+            status='vacant'
+        ).select_related('property')
+        
+        if property_id:
+            vacant_units = vacant_units.filter(property_id=property_id)
+        
+        vacancy_data = []
+        
+        for unit in vacant_units:
+            # Find last active contract
+            last_contract = RentalContract.objects.filter(
+                unit=unit
+            ).order_by('-end_date').first()
+            
+            if last_contract and last_contract.end_date:
+                days_vacant = (timezone.now().date() - last_contract.end_date).days
+            else:
+                # Unit never rented or no end date
+                days_vacant = (timezone.now().date() - unit.created_at.date()).days
+            
+            if days_vacant >= min_days:
+                vacancy_data.append({
+                    'unit_number': unit.unit_number,
+                    'property': unit.property.name,
+                    'unit_type': unit.get_unit_type_display(),
+                    'rent_amount': unit.rent_amount,
+                    'days_vacant': days_vacant,
+                    'last_tenant': f"{last_contract.customer.first_name} {last_contract.customer.last_name}" if last_contract else None,
+                    'vacancy_start': last_contract.end_date if last_contract else unit.created_at.date()
+                })
+        
+        # Sort by days vacant
+        vacancy_data.sort(key=lambda x: x['days_vacant'], reverse=True)
+        
+        # Summary
+        summary = {
+            'total_vacant_units': len(vacancy_data),
+            'avg_vacancy_days': sum(u['days_vacant'] for u in vacancy_data) / len(vacancy_data) if vacancy_data else 0,
+            'longest_vacancy': max(u['days_vacant'] for u in vacancy_data) if vacancy_data else 0
+        }
+        
+        return Response({
+            'summary': summary,
+            'vacant_units': vacancy_data
+        })
+
+
+class UnitTypeAnalysisView(BaseReportView):
+    """
+    Performance analysis by unit type
+    Query params: ?property_id=1
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        
+        units = Unit.objects.all()
+        
+        if property_id:
+            units = units.filter(property_id=property_id)
+        
+        analysis = []
+        
+        for unit_type_code, unit_type_label in Unit.UnitType.choices:
+            type_units = units.filter(unit_type=unit_type_code)
+            
+            if not type_units.exists():
+                continue
+            
+            # Stats
+            total = type_units.count()
+            occupied = type_units.filter(status='occupied').count()
+            avg_rent = type_units.aggregate(avg=Avg('rent_amount'))['avg'] or 0
+            total_revenue = Payment.objects.filter(
+                receipt__contract__unit__unit_type=unit_type_code
+            ).aggregate(total=Sum('amount'))['total'] or 0
+            
+            analysis.append({
+                'unit_type': unit_type_label,
+                'total_units': total,
+                'occupied': occupied,
+                'vacant': total - occupied,
+                'occupancy_rate': (occupied / total * 100) if total > 0 else 0,
+                'avg_rent': avg_rent,
+                'total_revenue': total_revenue
+            })
+        
+        return Response({'analysis': analysis})
+
+
+class TenantMovementReportView(BaseReportView):
+    """
+    Track tenant move-ins and move-outs
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        # Move-ins (contracts starting in period)
+        move_ins = RentalContract.objects.filter(
+            start_date__range=[start_date, end_date]
+        ).select_related('customer', 'unit__property')
+        
+        if property_id:
+            move_ins = move_ins.filter(unit__property_id=property_id)
+        
+        # Move-outs (contracts ending in period)
+        move_outs = RentalContract.objects.filter(
+            end_date__range=[start_date, end_date]
+        ).select_related('customer', 'unit__property')
+        
+        if property_id:
+            move_outs = move_outs.filter(unit__property_id=property_id)
+        
+        move_ins_data = move_ins.values(
+            'customer__first_name',
+            'customer__last_name',
+            'unit__unit_number',
+            'unit__property__name',
+            'start_date',
+            'rent_amount'
+        ).order_by('-start_date')
+        
+        move_outs_data = move_outs.values(
+            'customer__first_name',
+            'customer__last_name',
+            'unit__unit_number',
+            'unit__property__name',
+            'end_date',
+            'rent_amount'
+        ).order_by('-end_date')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': {
+                'total_move_ins': move_ins.count(),
+                'total_move_outs': move_outs.count(),
+                'net_change': move_ins.count() - move_outs.count()
+            },
+            'move_ins': move_ins_data,
+            'move_outs': move_outs_data
+        })
+
+
+class RentPricingAnalysisView(BaseReportView):
+    """
+    Rent pricing analysis by unit type and property
+    Query params: ?property_id=1
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        
+        units = Unit.objects.all()
+        
+        if property_id:
+            units = units.filter(property_id=property_id)
+        
+        # Overall pricing stats
+        overall = units.aggregate(
+            avg_rent=Avg('rent_amount'),
+            min_rent=Min('rent_amount'),
+            max_rent=Max('rent_amount')
+        )
+        
+        # By unit type
+        by_type = units.values('unit_type').annotate(
+            avg_rent=Avg('rent_amount'),
+            min_rent=Min('rent_amount'),
+            max_rent=Max('rent_amount'),
+            unit_count=Count('id')
+        ).order_by('unit_type')
+        
+        # By property
+        by_property = units.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            avg_rent=Avg('rent_amount'),
+            min_rent=Min('rent_amount'),
+            max_rent=Max('rent_amount'),
+            unit_count=Count('id')
+        ).order_by('property__name')
+        
+        # By property and unit type (matrix)
+        pricing_matrix = units.values(
+            'property__name',
+            'unit_type'
+        ).annotate(
+            avg_rent=Avg('rent_amount'),
+            count=Count('id')
+        ).order_by('property__name', 'unit_type')
+        
+        return Response({
+            'overall': overall,
+            'by_unit_type': by_type,
+            'by_property': by_property,
+            'pricing_matrix': pricing_matrix
+        })
+
+
+class UnitUtilizationReportView(BaseReportView):
+    """
+    Historical occupancy trends
+    Query params: ?property_id=1&months=12
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        months = int(request.query_params.get('months', '12'))
+        
+        # Current occupancy
+        units = Unit.objects.all()
+        if property_id:
+            units = units.filter(property_id=property_id)
+        
+        current_occupancy = {
+            'total': units.count(),
+            'occupied': units.filter(status='occupied').count(),
+            'vacant': units.filter(status='vacant').count()
+        }
+        current_occupancy['rate'] = (
+            current_occupancy['occupied'] / current_occupancy['total'] * 100
+        ) if current_occupancy['total'] > 0 else 0
+        
+        # Historical data (based on contract activity)
+        historical = []
+        for i in range(months):
+            month_start = (timezone.now() - timedelta(days=30*i)).date()
+            
+            # Count active contracts in that month
+            active_contracts = RentalContract.objects.filter(
+                start_date__lte=month_start,
+                is_active=True
+            ).filter(
+                Q(end_date__gte=month_start) | Q(end_date__isnull=True)
+            )
+            
+            if property_id:
+                active_contracts = active_contracts.filter(unit__property_id=property_id)
+            
+            occupied = active_contracts.count()
+            total = units.count()
+            
+            historical.append({
+                'month': month_start.strftime('%Y-%m'),
+                'occupied': occupied,
+                'total': total,
+                'occupancy_rate': (occupied / total * 100) if total > 0 else 0
+            })
+        
+        historical.reverse()
+        
+        return Response({
+            'current': current_occupancy,
+            'historical': historical
+        })
+
+
+class AvailableUnitsReportView(BaseReportView):
+    """
+    List of all available (vacant) units
+    Query params: ?property_id=1&unit_type=one_bedroom&max_rent=50000
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        unit_type = request.query_params.get('unit_type')
+        max_rent = request.query_params.get('max_rent')
+        
+        # Vacant units
+        available = Unit.objects.filter(
+            status='vacant'
+        ).select_related('property')
+        
+        if property_id:
+            available = available.filter(property_id=property_id)
+        
+        if unit_type:
+            available = available.filter(unit_type=unit_type)
+        
+        if max_rent:
+            available = available.filter(rent_amount__lte=Decimal(max_rent))
+        
+        units_data = available.values(
+            'id',
+            'unit_number',
+            'property__name',
+            'property__address',
+            'unit_type',
+            'rent_amount',
+            'water_meter_reading',
+            'electricity_meter_reading'
+        ).order_by('property__name', 'unit_number')
+        
+        # Summary
+        summary = {
+            'total_available': available.count(),
+            'properties': available.values('property__name').distinct().count()
+        }
+        
+        # By property
+        by_property = available.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            available_count=Count('id'),
+            avg_rent=Avg('rent_amount')
+        ).order_by('property__name')
+        
+        return Response({
+            'summary': summary,
+            'by_property': by_property,
+            'units': units_data
+        })
+
+
+# ==================== TENANT & CUSTOMER REPORTS ====================
+
+class TenantDirectoryReportView(BaseReportView):
+    """
+    Complete tenant directory
+    Query params: ?property_id=1&is_active=true
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        is_active = request.query_params.get('is_active')
+        
+        customers = Customer.objects.select_related('unit__property')
+        
+        if property_id:
+            customers = customers.filter(unit__property_id=property_id)
+        
+        if is_active is not None:
+            is_active_bool = is_active.lower() == 'true'
+            customers = customers.filter(is_active=is_active_bool)
+        
+        directory = customers.values(
+            'id',
+            'first_name',
+            'last_name',
+            'phone_number',
+            'email',
+            'id_number',
+            'unit__unit_number',
+            'unit__property__name',
+            'move_in_date',
+            'is_active'
+        ).order_by('unit__property__name', 'last_name')
+        
+        # Summary
+        summary = {
+            'total_tenants': customers.count(),
+            'active': customers.filter(is_active=True).count(),
+            'inactive': customers.filter(is_active=False).count()
+        }
+        
+        return Response({
+            'summary': summary,
+            'directory': directory
+        })
+
+class TenantPaymentHistoryView(BaseReportView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, tenant_id):
+        start_date, end_date = self.get_date_range(request)
+
+        try:
+            customer = Customer.objects.get(id=tenant_id)
+        except Customer.DoesNotExist:
+            return Response({'error': 'Tenant not found'}, status=404)
+
+        # Compute total billed for each receipt
+        payments = Payment.objects.filter(
+            receipt__contract__customer=customer,
+            payment_date__range=[start_date, end_date]
+        ).select_related('receipt').annotate(
+            total_amount=(
+                F('receipt__monthly_rent') +
+                F('receipt__rental_deposit') +
+                F('receipt__electricity_deposit') +
+                F('receipt__electricity_bill') +
+                F('receipt__water_deposit') +
+                F('receipt__water_bill') +
+                F('receipt__service_charge') +
+                F('receipt__security_charge') +
+                F('receipt__previous_balance') +
+                F('receipt__other_charges')
+            )
+        ).order_by('-payment_date')
+
+        payment_history = payments.values(
+            'id',
+            'amount',
+            'payment_date',
+            'method',
+            'reference',
+            'receipt__receipt_number',
+            'receipt__status',
+            'total_amount'
+        )
+
+        summary = {
+            'tenant_name': f"{customer.first_name} {customer.last_name}",
+            'phone': customer.phone_number,
+            'unit': customer.unit.unit_number if customer.unit else None,
+            'total_paid': payments.aggregate(total=Sum('amount'))['total'] or Decimal('0.00'),
+            'payment_count': payments.count(),
+            'current_balance': customer.unit.balance if customer.unit else Decimal('0.00')
+        }
+
+        return Response({
+            'summary': summary,
+            'payment_history': payment_history
+        })
+    
+
+class TenantArrearsAgingView(BaseReportView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+
+        units = Unit.objects.filter(
+            balance__gt=0,
+            status='occupied'
+        ).select_related('property', 'tenant')
+
+        if property_id:
+            units = units.filter(property_id=property_id)
+
+        aging_data = {
+            '0-30_days': [],
+            '31-60_days': [],
+            '61-90_days': [],
+            '90+_days': []
+        }
+
+        totals = {
+            '0-30_days': Decimal('0.00'),
+            '31-60_days': Decimal('0.00'),
+            '61-90_days': Decimal('0.00'),
+            '90+_days': Decimal('0.00')
+        }
+
+        for unit in units:
+            # 🔥 Skip units with no tenant (to avoid crash)
+            try:
+                tenant = unit.tenant
+            except Unit.tenant.RelatedObjectDoesNotExist:
+                continue
+
+            # Find oldest unpaid receipt
+            oldest_unpaid = Receipt.objects.filter(
+                contract__unit=unit,
+                contract__is_active=True,
+                status__in=['unpaid', 'partial']
+            ).order_by('issue_date').first()
+
+            if oldest_unpaid:
+                days_overdue = (timezone.now().date() - oldest_unpaid.issue_date.date()).days
+
+                tenant_info = {
+                    'tenant_name': f"{tenant.first_name} {tenant.last_name}",
+                    'phone': tenant.phone_number,
+                    'unit': unit.unit_number,
+                    'property': unit.property.name,
+                    'balance': unit.balance,
+                    'days_overdue': days_overdue,
+                    'oldest_unpaid_date': oldest_unpaid.issue_date.date()
+                }
+
+                if days_overdue <= 30:
+                    aging_data['0-30_days'].append(tenant_info)
+                    totals['0-30_days'] += unit.balance
+                elif days_overdue <= 60:
+                    aging_data['31-60_days'].append(tenant_info)
+                    totals['31-60_days'] += unit.balance
+                elif days_overdue <= 90:
+                    aging_data['61-90_days'].append(tenant_info)
+                    totals['61-90_days'] += unit.balance
+                else:
+                    aging_data['90+_days'].append(tenant_info)
+                    totals['90+_days'] += unit.balance
+
+        return Response({
+            'totals': totals,
+            'grand_total': sum(totals.values()),
+            'aging_details': aging_data
+        })
+
+
+
+class ContractExpiryReportView(BaseReportView):
+    """
+    Contracts expiring soon
+    Query params: ?property_id=1&days=30
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        days = int(request.query_params.get('days', '30'))
+        
+        cutoff_date = timezone.now().date() + timedelta(days=days)
+        
+        expiring = RentalContract.objects.filter(
+            is_active=True,
+            end_date__lte=cutoff_date,
+            end_date__gte=timezone.now().date()
+        ).select_related('customer', 'unit__property').order_by('end_date')
+        
+        if property_id:
+            expiring = expiring.filter(unit__property_id=property_id)
+        
+        contracts_data = expiring.values(
+            'contract_number',
+            'customer__first_name',
+            'customer__last_name',
+            'customer__phone_number',
+            'unit__unit_number',
+            'unit__property__name',
+            'end_date',
+            'rent_amount',
+            'unit__balance'
+        )
+        
+        # Calculate days until expiry for each
+        contracts_list = list(contracts_data)
+        for contract in contracts_list:
+            days_until = (contract['end_date'] - timezone.now().date()).days
+            contract['days_until_expiry'] = days_until
+        
+        return Response({
+            'summary': {
+                'total_expiring': len(contracts_list),
+                'within_7_days': len([c for c in contracts_list if c['days_until_expiry'] <= 7]),
+                'within_30_days': len(contracts_list)
+            },
+            'contracts': contracts_list
+        })
+
+
+class NewTenantReportView(BaseReportView):
+    """
+    Recently onboarded tenants
+    Query params: ?property_id=1&days=30
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        days = int(request.query_params.get('days', '30'))
+        
+        cutoff_date = timezone.now().date() - timedelta(days=days)
+        
+        new_tenants = Customer.objects.filter(
+            move_in_date__gte=cutoff_date
+        ).select_related('unit__property')
+        
+        if property_id:
+            new_tenants = new_tenants.filter(unit__property_id=property_id)
+        
+        tenants_data = new_tenants.values(
+            'first_name',
+            'last_name',
+            'phone_number',
+            'email',
+            'unit__unit_number',
+            'unit__property__name',
+            'move_in_date',
+            'unit__rent_amount'
+        ).order_by('-move_in_date')
+        
+        return Response({
+            'summary': {
+                'total_new_tenants': new_tenants.count(),
+                'period_days': days
+            },
+            'new_tenants': tenants_data
+        })
+
+
+class TenantRetentionReportView(BaseReportView):
+    """
+    Tenant retention metrics
+    Query params: ?property_id=1
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        
+        contracts = RentalContract.objects.all()
+        
+        if property_id:
+            contracts = contracts.filter(unit__property_id=property_id)
+        
+        # Calculate average tenancy duration
+        ended_contracts = contracts.filter(end_date__isnull=False)
+        
+        durations = []
+        for contract in ended_contracts:
+            duration = (contract.end_date - contract.start_date).days
+            durations.append(duration)
+        
+        avg_duration = sum(durations) / len(durations) if durations else 0
+        
+        # Active vs ended
+        active_count = contracts.filter(is_active=True).count()
+        ended_count = contracts.filter(is_active=False).count()
+        total = active_count + ended_count
+        
+        retention_rate = (active_count / total * 100) if total > 0 else 0
+        
+        # Tenancy length distribution
+        distribution = {
+            '0-6_months': len([d for d in durations if d <= 180]),
+            '6-12_months': len([d for d in durations if 180 < d <= 365]),
+            '1-2_years': len([d for d in durations if 365 < d <= 730]),
+            '2+_years': len([d for d in durations if d > 730])
+        }
+        
+        return Response({
+            'average_tenancy_days': round(avg_duration, 2),
+            'average_tenancy_months': round(avg_duration / 30, 2),
+            'active_contracts': active_count,
+            'ended_contracts': ended_count,
+            'retention_rate': round(retention_rate, 2),
+            'tenancy_distribution': distribution
+        })
+
+
+# ==================== UTILITY & MAINTENANCE REPORTS ====================
+
+class UtilityConsumptionReportView(BaseReportView):
+    """
+    Water and electricity consumption by unit
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        receipts = Receipt.objects.filter(
+            issue_date__range=[start_date, end_date]
+        ).select_related('contract__unit__property')
+        
+        if property_id:
+            receipts = receipts.filter(contract__unit__property_id=property_id)
+        
+        consumption_data = []
+        
+        for receipt in receipts:
+            water_consumed = receipt.current_water_reading - receipt.previous_water_reading
+            electricity_consumed = receipt.current_electricity_reading - receipt.previous_electricity_reading
+            
+            if water_consumed > 0 or electricity_consumed > 0:
+                consumption_data.append({
+                    'unit': receipt.contract.unit.unit_number,
+                    'property': receipt.contract.unit.property.name,
+                    'tenant': f"{receipt.contract.customer.first_name} {receipt.contract.customer.last_name}",
+                    'issue_date': receipt.issue_date.date(),
+                    'water_consumed': water_consumed,
+                    'electricity_consumed': electricity_consumed,
+                    'water_bill': receipt.water_bill,
+                    'electricity_bill': receipt.electricity_bill
+                })
+        
+        # Summary
+        total_water = sum(item['water_consumed'] for item in consumption_data)
+        total_electricity = sum(item['electricity_consumed'] for item in consumption_data)
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': {
+                'total_water_consumed': total_water,
+                'total_electricity_consumed': total_electricity,
+                'avg_water_per_unit': total_water / len(consumption_data) if consumption_data else 0,
+                'avg_electricity_per_unit': total_electricity / len(consumption_data) if consumption_data else 0
+            },
+            'consumption': consumption_data
+        })
+
+
+class UtilityRevenueReportView(BaseReportView):
+    """
+    Revenue from utility bills
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        receipts = Receipt.objects.filter(
+            issue_date__range=[start_date, end_date]
+        )
+        
+        if property_id:
+            receipts = receipts.filter(contract__unit__property_id=property_id)
+        
+        # Aggregate utility revenue
+        utility_revenue = receipts.aggregate(
+            total_water_bills=Sum('water_bill'),
+            total_electricity_bills=Sum('electricity_bill'),
+            total_water_deposits=Sum('water_deposit'),
+            total_electricity_deposits=Sum('electricity_deposit')
+        )
+        
+        # Calculate totals
+        water_total = (utility_revenue['total_water_bills'] or 0) + (utility_revenue['total_water_deposits'] or 0)
+        electricity_total = (utility_revenue['total_electricity_bills'] or 0) + (utility_revenue['total_electricity_deposits'] or 0)
+        grand_total = water_total + electricity_total
+        
+        # Monthly breakdown
+        monthly = receipts.extra(
+            select={'month': "DATE_TRUNC('month', issue_date)"}
+        ).values('month').annotate(
+            water_revenue=Sum('water_bill'),
+            electricity_revenue=Sum('electricity_bill')
+        ).order_by('month')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': {
+                'water_revenue': water_total,
+                'electricity_revenue': electricity_total,
+                'grand_total': grand_total
+            },
+            'monthly_breakdown': monthly
+        })
+
+
+class MaintenanceRequestReportView(BaseReportView):
+    """
+    Maintenance requests tracking
+    Query params: ?property_id=1&status=pending&start_date=2024-01-01
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        req_status = request.query_params.get('status')
+        
+        requests = MaintenanceRequest.objects.filter(
+            reported_date__range=[start_date, end_date]
+        ).select_related('unit__property', 'customer')
+        
+        if property_id:
+            requests = requests.filter(unit__property_id=property_id)
+        
+        if req_status:
+            requests = requests.filter(status=req_status)
+        
+        # Calculate response times
+        request_data = []
+        for req in requests:
+            response_time = None
+            if req.resolved_date:
+                response_time = (req.resolved_date - req.reported_date).days
+            
+            request_data.append({
+                'id': req.id,
+                'unit': req.unit.unit_number,
+                'property': req.unit.property.name,
+                'tenant': f"{req.customer.first_name} {req.customer.last_name}" if req.customer else None,
+                'description': req.description,
+                'status': req.status,
+                'reported_date': req.reported_date,
+                'resolved_date': req.resolved_date,
+                'response_time_days': response_time
+            })
+        
+        # Summary
+        total = requests.count()
+        by_status = requests.values('status').annotate(count=Count('id'))
+        
+        resolved = requests.filter(status='resolved')
+        avg_response_time = None
+        if resolved.exists():
+            response_times = [
+                (r.resolved_date - r.reported_date).days 
+                for r in resolved if r.resolved_date
+            ]
+            avg_response_time = sum(response_times) / len(response_times) if response_times else 0
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': {
+                'total_requests': total,
+                'by_status': by_status,
+                'avg_response_time_days': avg_response_time
+            },
+            'requests': request_data
+        })
+
+
+class MaintenanceCostReportView(BaseReportView):
+    """
+    Maintenance-related expenses
+    Query params: ?property_id=1&start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+        property_id = request.query_params.get('property_id')
+        
+        # Filter expenses by description containing maintenance keywords
+        maintenance_keywords = ['maintenance', 'repair', 'fix', 'plumbing', 'electrical', 'painting']
+        
+        q_objects = Q()
+        for keyword in maintenance_keywords:
+            q_objects |= Q(description__icontains=keyword)
+        
+        expenses = Expense.objects.filter(
+            q_objects,
+            expense_date__range=[start_date, end_date]
+        ).select_related('property', 'recorded_by')
+        
+        if property_id:
+            expenses = expenses.filter(property_id=property_id)
+        
+        # Summary
+        total_cost = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # By property
+        by_property = expenses.values(
+            'property__id',
+            'property__name'
+        ).annotate(
+            total_cost=Sum('amount'),
+            expense_count=Count('id')
+        ).order_by('-total_cost')
+        
+        # Detailed list
+        expense_list = expenses.values(
+            'id',
+            'property__name',
+            'description',
+            'amount',
+            'expense_date',
+            'recorded_by__username'
+        ).order_by('-expense_date')
+        
+        return Response({
+            'period': {'start_date': start_date, 'end_date': end_date},
+            'summary': {
+                'total_maintenance_cost': total_cost,
+                'expense_count': expenses.count()
+            },
+            'by_property': by_property,
+            'expenses': expense_list
+        })
+
+
+# ==================== EXECUTIVE & DASHBOARD REPORTS ====================
+
+class ExecutiveDashboardView(BaseReportView):
+    """
+    High-level KPIs for executive dashboard
+    Query params: ?property_id=1&period=30 (days)
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        property_id = request.query_params.get('property_id')
+        period = int(request.query_params.get('period', '30'))
+        
+        start_date = timezone.now().date() - timedelta(days=period)
+        end_date = timezone.now().date()
+        
+        # Apply property filter
+        units_query = Unit.objects.all()
+        payments_query = Payment.objects.filter(payment_date__range=[start_date, end_date])
+        expenses_query = Expense.objects.filter(expense_date__range=[start_date, end_date])
+        
+        if property_id:
+            units_query = units_query.filter(property_id=property_id)
+            payments_query = payments_query.filter(receipt__contract__unit__property_id=property_id)
+            expenses_query = expenses_query.filter(property_id=property_id)
+        
+        # Revenue
+        total_revenue = payments_query.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Expenses
+        total_expenses = expenses_query.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Net profit
+        net_profit = total_revenue - total_expenses
+        
+        # Outstanding balances
+        total_outstanding = units_query.aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+        
+        # Occupancy
+        total_units = units_query.count()
+        occupied = units_query.filter(status='occupied').count()
+        occupancy_rate = (occupied / total_units * 100) if total_units > 0 else 0
+        
+        # Active contracts
+        active_contracts = RentalContract.objects.filter(is_active=True)
+        if property_id:
+            active_contracts = active_contracts.filter(unit__property_id=property_id)
+        
+        # Expected monthly revenue
+        expected_revenue = active_contracts.aggregate(total=Sum('rent_amount'))['total'] or Decimal('0.00')
+        
+        # Collection rate
+        collection_rate = (total_revenue / expected_revenue * 100) if expected_revenue > 0 else 0
+        
+        # Maintenance requests
+        pending_maintenance = MaintenanceRequest.objects.filter(status='pending')
+        if property_id:
+            pending_maintenance = pending_maintenance.filter(unit__property_id=property_id)
+        
+        return Response({
+            'period': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'days': period
+            },
+            'financial': {
+                'total_revenue': total_revenue,
+                'total_expenses': total_expenses,
+                'net_profit': net_profit,
+                'profit_margin': ((net_profit / total_revenue * 100) if total_revenue > 0 else 0),
+                'outstanding_balances': total_outstanding,
+                'expected_monthly_revenue': expected_revenue,
+                'collection_rate': round(collection_rate, 2)
+            },
+            'occupancy': {
+                'total_units': total_units,
+                'occupied': occupied,
+                'vacant': total_units - occupied,
+                'occupancy_rate': round(occupancy_rate, 2)
+            },
+            'operations': {
+                'active_contracts': active_contracts.count(),
+                'pending_maintenance': pending_maintenance.count()
+            }
+        })
+
+
+class PropertyComparisonReportView(BaseReportView):
+    """
+    Side-by-side comparison of all properties
+    Query params: ?start_date=2024-01-01&end_date=2024-12-31
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        start_date, end_date = self.get_date_range(request)
+
+        properties = Property.objects.all().order_by('name')
+
+        comparison = []
+
+        for prop in properties:
+            # Units under this property
+            units = Unit.objects.filter(property=prop)
+
+            total_units = units.count()
+            occupied_units = units.filter(status='occupied').count()
+            vacant_units = total_units - occupied_units
+
+       # Active contracts under this property
+            contracts = RentalContract.objects.filter(
+                unit__property=prop,
+                is_active=True
+            )
+            # Rent expected (sum of monthly_rent for active contracts)
+            expected_rent = contracts.aggregate(
+                total=Sum('rent_amount')
+            )['total'] or Decimal('0.00')
+
+            # Payments received within the date range
+            payments = Payment.objects.filter(
+                receipt__contract__unit__property=prop,
+                payment_date__range=[start_date, end_date]
+            )
+
+            total_collected = payments.aggregate(
+                total=Sum('amount')
+            )['total'] or Decimal('0.00')
+
+            # Total arrears = sum of unit balances
+            arrears = units.aggregate(
+                total=Sum('balance')
+            )['total'] or Decimal('0.00')
+
+            # Occupancy rate
+            occupancy_rate = (
+                (occupied_units / total_units) * 100
+                if total_units > 0 else 0
+            )
+
+            # Efficiency: collected / expected
+            collection_efficiency = (
+                (total_collected / expected_rent) * 100
+                if expected_rent > 0 else 0
+            )
+
+            comparison.append({
+                "property_id": prop.id,
+                "property_name": prop.name,
+
+                "total_units": total_units,
+                "occupied_units": occupied_units,
+                "vacant_units": vacant_units,
+                "occupancy_rate": round(occupancy_rate, 2),
+
+                "expected_rent": expected_rent,
+                "total_collected": total_collected,
+                "collection_efficiency": round(collection_efficiency, 2),
+                "arrears": arrears,
+            })
+
+        return Response({
+            "start_date": start_date,
+            "end_date": end_date,
+            "comparison": comparison
+        })

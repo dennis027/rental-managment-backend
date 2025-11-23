@@ -69,6 +69,47 @@ urlpatterns = [
     path('api/dashboard/occupancy/', views.occupancy_stats, name='occupancy-stats'),
     path('api/dashboard/payment-methods/', views.payment_methods_breakdown, name='payment-methods'),
     path('api/dashboard/revenue-expenses/', views.revenue_vs_expenses, name='revenue-expenses'),
+    
+
+        # Financial Reports
+    path('api/revenue/total/', views.TotalRevenueReportView.as_view(), name='revenue-total'),
+    path('api/balances/outstanding/', views.OutstandingBalancesReportView.as_view(), name='balances-outstanding'),
+    path('api/payments/collections/', views.PaymentCollectionReportView.as_view(), name='payments-collections'),
+    path('api/rent-roll/', views.RentRollReportView.as_view(), name='rent-roll'),
+    path('api/deposits/tracking/', views.DepositTrackingReportView.as_view(), name='deposits-tracking'),
+    path('api/expenses/analysis/', views.ExpenseAnalysisReportView.as_view(), name='expenses-analysis'),
+    path('api/profit-loss/', views.ProfitLossReportView.as_view(), name='profit-loss'),
+    path('api/defaulters/', views.DefaultersReportView.as_view(), name='defaulters'),
+    path('api/payments/methods/', views.PaymentMethodAnalysisView.as_view(), name='payment-methods'),
+    path('api/revenue/forecast/', views.RevenueForecastReportView.as_view(), name='revenue-forecast'),
+    
+    # Occupancy & Unit Reports
+    path('api/occupancy/rate/', views.OccupancyRateReportView.as_view(), name='occupancy-rate'),
+    path('api/units/performance/', views.UnitPerformanceReportView.as_view(), name='units-performance'),
+    path('api/vacancy/duration/', views.VacancyDurationReportView.as_view(), name='vacancy-duration'),
+    path('api/units/type-analysis/', views.UnitTypeAnalysisView.as_view(), name='units-type-analysis'),
+    path('api/tenant-movement/', views.TenantMovementReportView.as_view(), name='tenant-movement'),
+    path('api/rent/pricing/', views.RentPricingAnalysisView.as_view(), name='rent-pricing'),
+    path('api/units/utilization/', views.UnitUtilizationReportView.as_view(), name='units-utilization'),
+    path('api/units/available/', views.AvailableUnitsReportView.as_view(), name='units-available'),
+    
+    # Tenant & Customer Reports
+    path('api/tenants/directory/', views.TenantDirectoryReportView.as_view(), name='tenants-directory'),
+    path('api/tenants/<int:tenant_id>/payment-history/', views.TenantPaymentHistoryView.as_view(), name='tenant-payment-history'),
+    path('api/tenants/arrears-aging/', views.TenantArrearsAgingView.as_view(), name='tenants-arrears-aging'),
+    path('api/contracts/expiring/', views.ContractExpiryReportView.as_view(), name='contracts-expiring'),
+    path('api/tenants/new/', views.NewTenantReportView.as_view(), name='tenants-new'),
+    path('api/tenants/retention/', views.TenantRetentionReportView.as_view(), name='tenants-retention'),
+    
+    # Utility & Maintenance Reports
+    path('api/utilities/consumption/', views.UtilityConsumptionReportView.as_view(), name='utilities-consumption'),
+    path('api/utilities/revenue/', views.UtilityRevenueReportView.as_view(), name='utilities-revenue'),
+    path('api/maintenance/requests/', views.MaintenanceRequestReportView.as_view(), name='maintenance-requests'),
+    path('api/maintenance/costs/', views.MaintenanceCostReportView.as_view(), name='maintenance-costs'),
+    
+    # Executive & Dashboard Reports
+    path('api/dashboard/executive/', views.ExecutiveDashboardView.as_view(), name='dashboard-executive'),
+    path('api/properties/comparison/', views.PropertyComparisonReportView.as_view(), name='properties-comparison'),
 
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
