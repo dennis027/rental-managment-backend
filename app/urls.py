@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, GenerateMonthlyReceiptsView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertySystemParameterView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitListCreate 
+from .views import ActivateAccountView, ContractSearchView, CustomerDetail, CustomerDetailView, CustomerListCreate, ExpenseDetailView, ExpenseListCreateView, GenerateMonthlyReceiptsView, GenerateMonthlyReceiptsWithReadingsView, GetActiveUnitsForPropertyView, MaintenanceRequestDetailView, MaintenanceRequestListCreateView, PaymentDetailView, PaymentListCreateView, PropertyDashboardView, PropertyDetailView, PropertySystemParameterView, PropertyUnitsAnalyticsView, PropertyDetail, PropertyListCreate, PropertyUnitsListView, ReceiptDetailView, ReceiptListCreateView, RegisterView, LoginView,PasswordResetRequestView,PasswordResetConfirmView,PasswordResetCodeCheckView,LogoutView, RentalContractCancel, RentalContractDetail, RentalContractListCreate,ResendActivationWithRateLimitView, UnitDetail, UnitDetailView, UnitListCreate 
 
 from django.conf import settings
 from django.conf.urls.static import static
@@ -28,9 +28,19 @@ urlpatterns = [
     path("api/units/<int:pk>/", UnitDetail.as_view(), name="unit-detail"),
 
 
+       # Property APIs
+    path('api/properties/<int:property_id>/', PropertyDetailView.as_view(), name='property-detail'),
+    path('api/properties/<int:property_id>/units/', PropertyUnitsListView.as_view(), name='property-units-list'),
+    path('api/dashboard/', PropertyDashboardView.as_view(), name='property-dashboard'),
+    
+    # Unit APIs
+    path('api/units/<int:unit_id>/detail/', UnitDetailView.as_view(), name='unit-detail'),
+
+
      # Customers
     path("api/customers/", CustomerListCreate.as_view(), name="customer-list-create"),
     path("api/customers/<int:pk>/", CustomerDetail.as_view(), name="customer-detail"),
+    path('api/customers/<int:customer_id>/detail/', CustomerDetailView.as_view(), name='customer-detail'),
 
     # rental contract
     path("api/contracts/", RentalContractListCreate.as_view(), name="contract-list-create"),
@@ -53,7 +63,11 @@ urlpatterns = [
     # Receipt APIs
     path("api/receipts/", ReceiptListCreateView.as_view(), name="receipt-list-create"),
     path("api/receipts/<int:pk>/", ReceiptDetailView.as_view(), name="receipt-detail"),
+    
+    
+    path('api/units/active/', GetActiveUnitsForPropertyView.as_view(), name='get-active-units'),
     path('api/receipts/generate-monthly-receipts/', GenerateMonthlyReceiptsView.as_view(), name='generate-receipts'),
+    path('api/receipts/generate-monthly-with-readings/', GenerateMonthlyReceiptsWithReadingsView.as_view(), name='generate-monthly-receipts-with-readings'),
 
 
     # General Analytics Endpoint

@@ -23,7 +23,7 @@ from .models import Customer, Expense, MaintenanceRequest, Payment, Property, Re
 from .serializers import CustomerSerializer, ExpenseSerializer, MaintenanceRequestSerializer, PaymentSerializer, PropertySerializer, ReceiptSerializer, RentalContractSerializer, SystemParameterSerializer, UnitSerializer
 from rest_framework import viewsets
 from django.utils.timezone import now
-from django.db.models import Count, Sum, Avg,Q,Min,Max, F, DecimalField, ExpressionWrapper
+from django.db.models import Count, Sum, Avg,Q,Min,Max, F, DecimalField, ExpressionWrapper,Prefetch 
 from decimal import Decimal
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -847,6 +847,451 @@ class UnitDetail(APIView):
     
 
 
+# 🏢 API 1: Get Property Details with Summary Statistics
+class PropertyDetailView(APIView):
+    """
+    Get comprehensive property details including:
+    - Basic property info
+    - Total units, occupied, vacant
+    - Financial summary (total billed, paid, balance)
+    - System parameters
+    - Recent maintenance requests
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, property_id):
+        property_obj = get_object_or_404(Property, id=property_id)
+        
+        # Get all units for this property
+        units = Unit.objects.filter(property=property_obj)
+        
+        # Calculate statistics
+        total_units = units.count()
+        occupied_units = units.filter(status='occupied').count()
+        vacant_units = units.filter(status='vacant').count()
+        
+        # Financial summary across all units
+        financial_summary = units.aggregate(
+            total_billed=Sum('total_billed'),
+            total_paid=Sum('total_paid'),
+            total_balance=Sum('balance')
+        )
+        
+        # Active contracts
+        active_contracts = RentalContract.objects.filter(
+            unit__property=property_obj,
+            is_active=True
+        ).count()
+        
+        # Recent maintenance requests
+        pending_maintenance = MaintenanceRequest.objects.filter(
+            unit__property=property_obj,
+            status__in=['pending', 'in_progress']
+        ).count()
+        
+        # Get system parameters
+        system_params = SystemParameter.objects.filter(property=property_obj).first()
+        system_params_data = None
+        if system_params:
+            system_params_data = {
+                "has_water_bill": system_params.has_water_bill,
+                "has_electricity_bill": system_params.has_electricity_bill,
+                "has_service_charge": system_params.has_service_charge,
+                "has_security_charge": system_params.has_security_charge,
+                "water_unit_cost": str(system_params.water_unit_cost),
+                "electricity_unit_cost": str(system_params.electicity_unit_cost),
+                "default_service_charge": str(system_params.default_service_charge),
+                "default_security_charge": str(system_params.default_security_charge),
+                "allow_partial_payments": system_params.allow_partial_payments,
+                "grace_period_days": system_params.grace_period_days
+            }
+        
+        # Monthly revenue (current month)
+        from datetime import datetime
+        current_month = datetime.now().month
+        current_year = datetime.now().year
+        
+        monthly_receipts = Receipt.objects.filter(
+            contract__unit__property=property_obj,
+            issue_date__year=current_year,
+            issue_date__month=current_month
+        ).aggregate(
+            total_billed=Sum('monthly_rent'),
+            total_collected=Sum('amount_paid')
+        )
+        
+        response_data = {
+            "property_id": property_obj.id,
+            "property_name": property_obj.name,
+            "address": property_obj.address,
+            "description": property_obj.description,
+            "is_active": property_obj.is_active,
+            "created_at": property_obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            
+            "unit_statistics": {
+                "total_units": total_units,
+                "occupied_units": occupied_units,
+                "vacant_units": vacant_units,
+                "occupancy_rate": round((occupied_units / total_units * 100), 2) if total_units > 0 else 0,
+                "active_contracts": active_contracts
+            },
+            
+            "financial_summary": {
+                "total_billed": str(financial_summary['total_billed'] or 0),
+                "total_paid": str(financial_summary['total_paid'] or 0),
+                "outstanding_balance": str(financial_summary['total_balance'] or 0),
+                "collection_rate": round(
+                    (float(financial_summary['total_paid'] or 0) / float(financial_summary['total_billed'] or 1) * 100), 
+                    2
+                )
+            },
+            
+            "current_month_revenue": {
+                "month": datetime.now().strftime("%B %Y"),
+                "expected_rent": str(monthly_receipts['total_billed'] or 0),
+                "collected": str(monthly_receipts['total_collected'] or 0)
+            },
+            
+            "maintenance": {
+                "pending_requests": pending_maintenance
+            },
+            
+            "system_parameters": system_params_data
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
+# 🏠 API 2: Get Unit Details with Current Tenant & Contract
+class UnitDetailView(APIView):
+    """
+    Get comprehensive unit details including:
+    - Unit information
+    - Current tenant (if occupied)
+    - Active contract details
+    - Financial summary (receipts, payments, balance)
+    - Recent receipts
+    - Payment history
+    - Maintenance requests
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, unit_id):
+        unit = get_object_or_404(
+            Unit.objects.select_related('property'),
+            id=unit_id
+        )
+        
+        # Get current tenant (if any)
+        current_tenant = None
+        if hasattr(unit, 'tenant') and unit.tenant:
+            tenant = unit.tenant
+            current_tenant = {
+                "id": tenant.id,
+                "full_name": f"{tenant.first_name} {tenant.last_name}",
+                "phone_number": tenant.phone_number,
+                "email": tenant.email,
+                "id_number": tenant.id_number,
+                "move_in_date": tenant.move_in_date.strftime("%Y-%m-%d") if tenant.move_in_date else None,
+                "is_active": tenant.is_active
+            }
+        
+        # Get active contract
+        active_contract = RentalContract.objects.filter(
+            unit=unit,
+            is_active=True
+        ).select_related('customer').first()
+        
+        contract_details = None
+        if active_contract:
+            contract_details = {
+                "id": active_contract.id,
+                "contract_number": active_contract.contract_number,
+                "customer": {
+                    "id": active_contract.customer.id,
+                    "full_name": f"{active_contract.customer.first_name} {active_contract.customer.last_name}",
+                    "phone_number": active_contract.customer.phone_number,
+                    "email": active_contract.customer.email
+                },
+                "start_date": active_contract.start_date.strftime("%Y-%m-%d"),
+                "end_date": active_contract.end_date.strftime("%Y-%m-%d") if active_contract.end_date else None,
+                "rent_amount": str(active_contract.rent_amount),
+                "deposit_amount": str(active_contract.deposit_amount),
+                "payment_frequency": active_contract.payment_frequency,
+                "is_active": active_contract.is_active
+            }
+        
+        # Get recent receipts (last 6 months)
+        receipts = Receipt.objects.filter(
+            contract__unit=unit
+        ).select_related('contract', 'issued_by').order_by('-issue_date')[:6]
+        
+        recent_receipts = []
+        for receipt in receipts:
+            recent_receipts.append({
+                "id": receipt.id,
+                "receipt_number": receipt.receipt_number,
+                "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
+                "total_amount": str(receipt.total_amount),
+                "amount_paid": str(receipt.amount_paid),
+                "balance": str(receipt.balance),
+                "status": receipt.status,
+                "is_paid": receipt.is_paid,
+                "breakdown": {
+                    "monthly_rent": str(receipt.monthly_rent),
+                    "water_bill": str(receipt.water_bill),
+                    "electricity_bill": str(receipt.electricity_bill),
+                    "service_charge": str(receipt.service_charge),
+                    "security_charge": str(receipt.security_charge),
+                    "previous_balance": str(receipt.previous_balance),
+                    "other_charges": str(receipt.other_charges)
+                }
+            })
+        
+        # Get payment history
+        if active_contract:
+            payments = Payment.objects.filter(
+                receipt__contract=active_contract
+            ).select_related('receipt').order_by('-payment_date')[:10]
+            
+            payment_history = []
+            for payment in payments:
+                payment_history.append({
+                    "id": payment.id,
+                    "receipt_number": payment.receipt.receipt_number,
+                    "amount": str(payment.amount),
+                    "payment_date": payment.payment_date.strftime("%Y-%m-%d"),
+                    "method": payment.method,
+                    "reference": payment.reference,
+                    "notes": payment.notes
+                })
+        else:
+            payment_history = []
+        
+        # Get maintenance requests
+        maintenance_requests = MaintenanceRequest.objects.filter(
+            unit=unit
+        ).select_related('customer').order_by('-reported_date')[:5]
+        
+        maintenance_list = []
+        for request in maintenance_requests:
+            maintenance_list.append({
+                "id": request.id,
+                "description": request.description,
+                "status": request.status,
+                "reported_date": request.reported_date.strftime("%Y-%m-%d %H:%M:%S"),
+                "resolved_date": request.resolved_date.strftime("%Y-%m-%d %H:%M:%S") if request.resolved_date else None,
+                "customer": f"{request.customer.first_name} {request.customer.last_name}" if request.customer else "N/A"
+            })
+        
+        # Response
+        response_data = {
+            "unit_id": unit.id,
+            "property": {
+                "id": unit.property.id,
+                "name": unit.property.name,
+                "address": unit.property.address
+            },
+            "unit_details": {
+                "unit_number": unit.unit_number,
+                "unit_type": unit.get_unit_type_display(),
+                "rent_amount": str(unit.rent_amount),
+                "status": unit.status,
+                "water_meter_reading": str(unit.water_meter_reading),
+                "electricity_meter_reading": str(unit.electricity_meter_reading)
+            },
+            "financial_summary": {
+                "total_billed": str(unit.total_billed),
+                "total_paid": str(unit.total_paid),
+                "outstanding_balance": str(unit.balance)
+            },
+            "current_tenant": current_tenant,
+            "active_contract": contract_details,
+            "recent_receipts": recent_receipts,
+            "payment_history": payment_history,
+            "maintenance_requests": maintenance_list
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
+# 📊 API 3: Get Property Dashboard Summary
+class PropertyDashboardView(APIView):
+    """
+    Get complete property dashboard data:
+    - All properties overview
+    - Total statistics
+    - Revenue trends
+    - Top performing properties
+    - Alerts and notifications
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        properties = Property.objects.filter(is_active=True)
+        
+        # Overall statistics
+        total_properties = properties.count()
+        total_units = Unit.objects.filter(property__in=properties).count()
+        occupied_units = Unit.objects.filter(property__in=properties, status='occupied').count()
+        vacant_units = total_units - occupied_units
+        
+        # Financial overview
+        overall_financials = Unit.objects.filter(property__in=properties).aggregate(
+            total_billed=Sum('total_billed'),
+            total_paid=Sum('total_paid'),
+            total_balance=Sum('balance')
+        )
+        
+        # Active contracts
+        total_active_contracts = RentalContract.objects.filter(
+            unit__property__in=properties,
+            is_active=True
+        ).count()
+        
+        # Pending maintenance
+        total_pending_maintenance = MaintenanceRequest.objects.filter(
+            unit__property__in=properties,
+            status__in=['pending', 'in_progress']
+        ).count()
+        
+        # Property breakdown
+        property_list = []
+        for prop in properties:
+            units = Unit.objects.filter(property=prop)
+            prop_stats = units.aggregate(
+                total=Count('id'),
+                occupied=Count('id', filter=Q(status='occupied')),
+                total_balance=Sum('balance')
+            )
+            
+            property_list.append({
+                "id": prop.id,
+                "name": prop.name,
+                "address": prop.address,
+                "total_units": prop_stats['total'] or 0,
+                "occupied_units": prop_stats['occupied'] or 0,
+                "vacant_units": (prop_stats['total'] or 0) - (prop_stats['occupied'] or 0),
+                "occupancy_rate": round((prop_stats['occupied'] or 0) / (prop_stats['total'] or 1) * 100, 2),
+                "outstanding_balance": str(prop_stats['total_balance'] or 0)
+            })
+        
+        # Alerts (units with high balances)
+        high_balance_units = Unit.objects.filter(
+            property__in=properties,
+            balance__gt=10000  # Units with balance > 10,000
+        ).select_related('property').order_by('-balance')[:5]
+        
+        alerts = []
+        for unit in high_balance_units:
+            active_contract = RentalContract.objects.filter(unit=unit, is_active=True).first()
+            tenant_name = f"{active_contract.customer.first_name} {active_contract.customer.last_name}" if active_contract else "N/A"
+            
+            alerts.append({
+                "type": "high_balance",
+                "severity": "warning",
+                "unit": unit.unit_number,
+                "property": unit.property.name,
+                "tenant": tenant_name,
+                "balance": str(unit.balance),
+                "message": f"Unit {unit.unit_number} has outstanding balance of KES {unit.balance}"
+            })
+        
+        response_data = {
+            "overview": {
+                "total_properties": total_properties,
+                "total_units": total_units,
+                "occupied_units": occupied_units,
+                "vacant_units": vacant_units,
+                "occupancy_rate": round((occupied_units / total_units * 100), 2) if total_units > 0 else 0,
+                "active_contracts": total_active_contracts
+            },
+            "financial_summary": {
+                "total_billed": str(overall_financials['total_billed'] or 0),
+                "total_collected": str(overall_financials['total_paid'] or 0),
+                "outstanding_balance": str(overall_financials['total_balance'] or 0),
+                "collection_rate": round(
+                    (float(overall_financials['total_paid'] or 0) / float(overall_financials['total_billed'] or 1) * 100),
+                    2
+                )
+            },
+            "maintenance": {
+                "pending_requests": total_pending_maintenance
+            },
+            "properties": property_list,
+            "alerts": alerts
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
+# 📋 API 4: Get All Units for a Property
+class PropertyUnitsListView(APIView):
+    """
+    Get all units for a specific property with tenant and contract info
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, property_id):
+        property_obj = get_object_or_404(Property, id=property_id)
+        
+        units = Unit.objects.filter(property=property_obj).select_related('property').prefetch_related(
+            Prefetch(
+                'contracts',
+                queryset=RentalContract.objects.filter(is_active=True).select_related('customer'),
+                to_attr='active_contracts'
+            )
+        ).order_by('unit_number')
+        
+        units_list = []
+        for unit in units:
+            contract = unit.active_contracts[0] if unit.active_contracts else None
+            
+            tenant_info = None
+            if contract:
+                tenant_info = {
+                    "id": contract.customer.id,
+                    "full_name": f"{contract.customer.first_name} {contract.customer.last_name}",
+                    "phone_number": contract.customer.phone_number,
+                    "email": contract.customer.email
+                }
+            
+            contract_info = None
+            if contract:
+                contract_info = {
+                    "id": contract.id,
+                    "contract_number": contract.contract_number,
+                    "start_date": contract.start_date.strftime("%Y-%m-%d"),
+                    "rent_amount": str(contract.rent_amount)
+                }
+            
+            units_list.append({
+                "id": unit.id,
+                "unit_number": unit.unit_number,
+                "unit_type": unit.get_unit_type_display(),
+                "rent_amount": str(unit.rent_amount),
+                "status": unit.status,
+                "water_meter_reading": str(unit.water_meter_reading),
+                "electricity_meter_reading": str(unit.electricity_meter_reading),
+                "financial": {
+                    "total_billed": str(unit.total_billed),
+                    "total_paid": str(unit.total_paid),
+                    "balance": str(unit.balance)
+                },
+                "tenant": tenant_info,
+                "contract": contract_info
+            })
+        
+        return Response({
+            "property_id": property_obj.id,
+            "property_name": property_obj.name,
+            "total_units": len(units_list),
+            "units": units_list
+        }, status=status.HTTP_200_OK)
+
+
+
+
 # ----------------- Customer APIs -----------------
 class CustomerListCreate(APIView):
     permission_classes = [IsAuthenticated]
@@ -894,6 +1339,275 @@ class CustomerDetail(APIView):
         customer.is_active = False
         customer.save()
         return Response({"detail": "Customer disabled instead of deleted."}, status=status.HTTP_200_OK)
+
+
+# 👤 API 5: Get Customer Details with Complete History
+class CustomerDetailView(APIView):
+    """
+    Get comprehensive customer/tenant details including:
+    - Personal information
+    - Current and past contracts
+    - Current unit assignment
+    - Complete payment history
+    - All receipts (paid, unpaid, partial)
+    - Outstanding balance across all contracts
+    - Maintenance requests submitted
+    - Payment behavior analytics
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, customer_id):
+        customer = get_object_or_404(
+            Customer.objects.select_related('unit', 'unit__property'),
+            id=customer_id
+        )
+        
+        # Personal information
+        personal_info = {
+            "id": customer.id,
+            "first_name": customer.first_name,
+            "last_name": customer.last_name,
+            "full_name": f"{customer.first_name} {customer.last_name}",
+            "phone_number": customer.phone_number,
+            "email": customer.email,
+            "id_number": customer.id_number,
+            "move_in_date": customer.move_in_date.strftime("%Y-%m-%d") if customer.move_in_date else None,
+            "is_active": customer.is_active,
+            "created_at": customer.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # ID photos (if any)
+        id_documents = {
+            "has_id_front": bool(customer.id_photo_front),
+            "has_id_back": bool(customer.id_photo_back),
+            "id_front_url": request.build_absolute_uri(customer.id_photo_front.url) if customer.id_photo_front else None,
+            "id_back_url": request.build_absolute_uri(customer.id_photo_back.url) if customer.id_photo_back else None
+        }
+        
+        # Current unit assignment
+        current_unit = None
+        if customer.unit:
+            current_unit = {
+                "id": customer.unit.id,
+                "unit_number": customer.unit.unit_number,
+                "unit_type": customer.unit.get_unit_type_display(),
+                "property": {
+                    "id": customer.unit.property.id,
+                    "name": customer.unit.property.name,
+                    "address": customer.unit.property.address
+                },
+                "rent_amount": str(customer.unit.rent_amount),
+                "status": customer.unit.status,
+                "outstanding_balance": str(customer.unit.balance)
+            }
+        
+        # Get all contracts (active and inactive)
+        all_contracts = RentalContract.objects.filter(
+            customer=customer
+        ).select_related('unit', 'unit__property').order_by('-created_at')
+        
+        active_contracts = []
+        past_contracts = []
+        
+        for contract in all_contracts:
+            contract_data = {
+                "id": contract.id,
+                "contract_number": contract.contract_number,
+                "unit": {
+                    "id": contract.unit.id,
+                    "unit_number": contract.unit.unit_number,
+                    "property_name": contract.unit.property.name
+                },
+                "start_date": contract.start_date.strftime("%Y-%m-%d"),
+                "end_date": contract.end_date.strftime("%Y-%m-%d") if contract.end_date else None,
+                "rent_amount": str(contract.rent_amount),
+                "deposit_amount": str(contract.deposit_amount),
+                "payment_frequency": contract.payment_frequency,
+                "is_active": contract.is_active,
+                "created_at": contract.created_at.strftime("%Y-%m-%d")
+            }
+            
+            if contract.is_active:
+                active_contracts.append(contract_data)
+            else:
+                past_contracts.append(contract_data)
+        
+        # Get all receipts for this customer
+        receipts = Receipt.objects.filter(
+            contract__customer=customer
+        ).select_related('contract', 'contract__unit', 'issued_by').order_by('-issue_date')
+        
+        # Categorize receipts by status
+        unpaid_receipts = []
+        partial_receipts = []
+        paid_receipts = []
+        
+        total_outstanding = Decimal('0.00')
+        
+        for receipt in receipts:
+            receipt_data = {
+                "id": receipt.id,
+                "receipt_number": receipt.receipt_number,
+                "contract_number": receipt.contract.contract_number,
+                "unit_number": receipt.contract.unit.unit_number,
+                "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
+                "total_amount": str(receipt.total_amount),
+                "amount_paid": str(receipt.amount_paid),
+                "balance": str(receipt.balance),
+                "status": receipt.status,
+                "is_paid": receipt.is_paid,
+                "breakdown": {
+                    "monthly_rent": str(receipt.monthly_rent),
+                    "water_bill": str(receipt.water_bill),
+                    "electricity_bill": str(receipt.electricity_bill),
+                    "service_charge": str(receipt.service_charge),
+                    "security_charge": str(receipt.security_charge),
+                    "previous_balance": str(receipt.previous_balance),
+                    "other_charges": str(receipt.other_charges)
+                }
+            }
+            
+            if receipt.status == 'unpaid':
+                unpaid_receipts.append(receipt_data)
+                total_outstanding += receipt.balance
+            elif receipt.status == 'partial':
+                partial_receipts.append(receipt_data)
+                total_outstanding += receipt.balance
+            else:  # paid
+                paid_receipts.append(receipt_data)
+        
+        # Get complete payment history
+        payments = Payment.objects.filter(
+            receipt__contract__customer=customer
+        ).select_related('receipt', 'receipt__contract').order_by('-payment_date')
+        
+        payment_history = []
+        total_paid_overall = Decimal('0.00')
+        
+        for payment in payments:
+            payment_history.append({
+                "id": payment.id,
+                "receipt_number": payment.receipt.receipt_number,
+                "contract_number": payment.receipt.contract.contract_number,
+                "amount": str(payment.amount),
+                "payment_date": payment.payment_date.strftime("%Y-%m-%d"),
+                "method": payment.method,
+                "reference": payment.reference,
+                "notes": payment.notes
+            })
+            total_paid_overall += payment.amount
+        
+        # Financial summary across all contracts
+        financial_summary = {
+            "total_receipts_issued": receipts.count(),
+            "unpaid_receipts_count": len(unpaid_receipts),
+            "partial_receipts_count": len(partial_receipts),
+            "paid_receipts_count": len(paid_receipts),
+            "total_outstanding_balance": str(total_outstanding),
+            "total_paid_lifetime": str(total_paid_overall),
+            "total_billed_lifetime": str(sum([r.total_amount for r in receipts]))
+        }
+        
+        # Payment behavior analytics
+        on_time_payments = 0
+        late_payments = 0
+        
+        for receipt in receipts:
+            if receipt.is_paid:
+                # Check if paid within grace period (assuming 5 days)
+                first_payment = Payment.objects.filter(receipt=receipt).order_by('payment_date').first()
+                if first_payment:
+                    days_to_pay = (first_payment.payment_date - receipt.issue_date.date()).days
+                    if days_to_pay <= 5:
+                        on_time_payments += 1
+                    else:
+                        late_payments += 1
+        
+        payment_behavior = {
+            "on_time_payments": on_time_payments,
+            "late_payments": late_payments,
+            "payment_reliability": round(
+                (on_time_payments / (on_time_payments + late_payments) * 100) if (on_time_payments + late_payments) > 0 else 0,
+                2
+            ),
+            "average_payment_method": Payment.objects.filter(
+                receipt__contract__customer=customer
+            ).values('method').annotate(count=Count('method')).order_by('-count').first()
+        }
+        
+        # Maintenance requests
+        maintenance_requests = MaintenanceRequest.objects.filter(
+            customer=customer
+        ).select_related('unit').order_by('-reported_date')
+        
+        maintenance_list = []
+        pending_maintenance = 0
+        
+        for request in maintenance_requests:
+            maintenance_list.append({
+                "id": request.id,
+                "unit_number": request.unit.unit_number,
+                "description": request.description,
+                "status": request.status,
+                "reported_date": request.reported_date.strftime("%Y-%m-%d %H:%M:%S"),
+                "resolved_date": request.resolved_date.strftime("%Y-%m-%d %H:%M:%S") if request.resolved_date else None
+            })
+            
+            if request.status in ['pending', 'in_progress']:
+                pending_maintenance += 1
+        
+        # Monthly payment summary (last 6 months)
+        from datetime import datetime, timedelta
+        from django.db.models.functions import TruncMonth
+        
+        six_months_ago = datetime.now() - timedelta(days=180)
+        
+        monthly_payments = Payment.objects.filter(
+            receipt__contract__customer=customer,
+            payment_date__gte=six_months_ago
+        ).annotate(
+            month=TruncMonth('payment_date')
+        ).values('month').annotate(
+            total=Sum('amount')
+        ).order_by('month')
+        
+        payment_trends = []
+        for item in monthly_payments:
+            payment_trends.append({
+                "month": item['month'].strftime("%B %Y"),
+                "amount_paid": str(item['total'])
+            })
+        
+        # Compile complete response
+        response_data = {
+            "personal_info": personal_info,
+            "id_documents": id_documents,
+            "current_unit": current_unit,
+            "contracts": {
+                "active": active_contracts,
+                "past": past_contracts,
+                "total_contracts": all_contracts.count()
+            },
+            "financial_summary": financial_summary,
+            "receipts": {
+                "unpaid": unpaid_receipts,
+                "partial": partial_receipts,
+                "paid": paid_receipts[:10],  # Last 10 paid receipts
+                "total_unpaid": len(unpaid_receipts),
+                "total_partial": len(partial_receipts),
+                "total_paid": len(paid_receipts)
+            },
+            "payment_history": payment_history[:20],  # Last 20 payments
+            "payment_behavior": payment_behavior,
+            "payment_trends": payment_trends,
+            "maintenance_requests": {
+                "requests": maintenance_list,
+                "pending_count": pending_maintenance,
+                "total_requests": len(maintenance_list)
+            }
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 # ----------------- RentalContract APIs -----------------
@@ -949,10 +1663,10 @@ class RentalContractListCreate(APIView):
 
         if system_params:
             if system_params.require_water_deposit:
-                water_deposit = system_params.water_unit_cost or 0
+                water_deposit = system_params.water_deposit_amount or 0
 
             if system_params.require_electricity_deposit:
-                electricity_deposit = system_params.electicity_unit_cost or 0
+                electricity_deposit = system_params.electricity_deposit_amount or 0
 
             if system_params.has_service_charge:
                 service_charge = system_params.default_service_charge or 0
@@ -1042,11 +1756,30 @@ class PaymentListCreateView(generics.ListCreateAPIView):
     queryset = Payment.objects.all().order_by("-payment_date")
     serializer_class = PaymentSerializer
 
+    def get_queryset(self):
+        """
+        Optional: filter by type (incoming/outgoing) or property/unit if passed as query params
+        """
+        queryset = super().get_queryset()
+        payment_type = self.request.query_params.get("type")
+        property_id = self.request.query_params.get("property_id")
+        unit_id = self.request.query_params.get("unit_id")
+
+        if payment_type in ["IN", "OUT"]:
+            queryset = queryset.filter(type=payment_type)
+        if property_id:
+            queryset = queryset.filter(receipt__contract__unit__property_id=property_id)
+        if unit_id:
+            queryset = queryset.filter(receipt__contract__unit_id=unit_id)
+
+        return queryset
+
 
 class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
+
 
 
 # ----------------- Models (for expenses) -----------------
@@ -1155,6 +1888,7 @@ class PropertyUnitsAnalyticsView(APIView):
     
 
 # ######## RECEIPT VIEW #########
+
 class ReceiptListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Receipt.objects.all().select_related("contract", "issued_by")
@@ -1163,8 +1897,57 @@ class ReceiptListCreateView(generics.ListCreateAPIView):
 
 class ReceiptDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Receipt.objects.all().select_related("contract", "issued_by", "contract__unit__property", "contract__customer")
+    queryset = Receipt.objects.all().select_related(
+        "contract", 
+        "issued_by", 
+        "contract__unit__property", 
+        "contract__customer"
+    )
     serializer_class = ReceiptSerializer
+    
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete receipt and rollback unit meter readings to previous values
+        """
+        receipt = self.get_object()
+        
+        # Get the unit associated with this receipt
+        unit = receipt.contract.unit
+        
+        # Store receipt info for logging
+        receipt_number = receipt.receipt_number
+        unit_number = unit.unit_number
+        
+        # 🔹 Rollback water meter reading
+        if receipt.previous_water_reading is not None:
+            old_water_reading = unit.water_meter_reading
+            unit.water_meter_reading = receipt.previous_water_reading
+            print(f"🔄 Water meter rollback: {old_water_reading} → {receipt.previous_water_reading}")
+        
+        # 🔹 Rollback electricity meter reading
+        if receipt.previous_electricity_reading is not None:
+            old_electricity_reading = unit.electricity_meter_reading
+            unit.electricity_meter_reading = receipt.previous_electricity_reading
+            print(f"🔄 Electricity meter rollback: {old_electricity_reading} → {receipt.previous_electricity_reading}")
+        
+        # Save the unit with rolled-back readings
+        unit.save()
+        
+        # Delete the receipt
+        receipt.delete()
+        
+        return Response({
+            "status": "✅ Receipt deleted successfully",
+            "message": f"Receipt {receipt_number} deleted and meter readings restored for unit {unit_number}",
+            "rollback_details": {
+                "unit": unit_number,
+                "water_meter_restored_to": str(unit.water_meter_reading),
+                "electricity_meter_restored_to": str(unit.electricity_meter_reading)
+            }
+        }, status=status.HTTP_200_OK)
+
+
 
 
 class GenerateMonthlyReceiptsView(APIView):
@@ -1260,6 +2043,246 @@ class GenerateMonthlyReceiptsView(APIView):
             },
             "generated_receipts": created_receipts
         }, status=status.HTTP_201_CREATED)
+
+class GetActiveUnitsForPropertyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        property_id = request.query_params.get("property_id")
+
+        if not property_id:
+            return Response(
+                {"error": "❌ 'property_id' is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        property_obj = get_object_or_404(Property, id=property_id)
+
+        # ✅ Correct related_name is "contracts"
+        units = (
+            Unit.objects.filter(property=property_obj)
+            .select_related("property")
+            .prefetch_related(
+                Prefetch(
+                    "contracts",
+                    queryset=RentalContract.objects.filter(is_active=True).select_related("customer"),
+                    to_attr="active_contracts"
+                )
+            )
+        )
+
+        active_units = []
+
+        for unit in units:
+            contract = unit.active_contracts[0] if unit.active_contracts else None
+
+            if contract:
+                active_units.append({
+                    "id": unit.id,
+                    "unit_number": unit.unit_number,
+                    "contract_id": contract.id,
+                    "customer_id": contract.customer.id,
+                    "customer_name": f"{contract.customer.first_name} {contract.customer.last_name}",
+                    "water_meter_reading": float(unit.water_meter_reading or 0),
+                    "electricity_meter_reading": float(unit.electricity_meter_reading or 0),
+                    "rent_amount": float(contract.rent_amount),
+                })
+
+        return Response(
+            {
+                "property_id": property_obj.id,
+                "property": property_obj.name,
+                "active_units": active_units,
+                "total_units": len(active_units),
+            },
+            status=status.HTTP_200_OK,
+        )
+    
+
+class GenerateMonthlyReceiptsWithReadingsView(APIView):
+    """
+    Generate monthly receipts with meter readings
+    This accepts meter readings for water and electricity and calculates bills
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        month = request.data.get("month")
+        property_id = request.data.get("property_id")
+        meter_readings = request.data.get("meter_readings", [])
+        
+        if not month:
+            return Response(
+                {"error": "❌ 'month' is required (e.g. 2025-11)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not property_id:
+            return Response(
+                {"error": "❌ 'property_id' is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        try:
+            year, month_num = map(int, month.split("-"))
+        except ValueError:
+            return Response(
+                {"error": "⚠️ Invalid month format. Use YYYY-MM."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        # Validate property
+        property_obj = get_object_or_404(Property, id=property_id)
+        
+        # Get system parameters for this property
+        system_params = SystemParameter.objects.filter(property=property_obj).first()
+        
+        if not system_params:
+            return Response(
+                {"error": "❌ System parameters not configured for this property."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        created_count = 0
+        skipped_existing = 0
+        updated_units = 0
+        created_receipts = []
+        errors = []
+        
+        # Process each meter reading
+        for reading_data in meter_readings:
+            try:
+                unit_id = reading_data.get("unit_id")
+                contract_id = reading_data.get("contract_id")
+                previous_balance = Decimal(str(reading_data.get("previous_balance", 0)))
+                current_water_reading = Decimal(str(reading_data.get("current_water_reading", 0)))
+                current_electricity_reading = Decimal(str(reading_data.get("current_electricity_reading", 0)))
+                water_bill = Decimal(str(reading_data.get("water_bill", 0)))
+                electricity_bill = Decimal(str(reading_data.get("electricity_bill", 0)))
+                
+                # Get custom charges (user can vary from defaults)
+                service_charge = Decimal(str(reading_data.get("service_charge", system_params.default_service_charge)))
+                security_charge = Decimal(str(reading_data.get("security_charge", system_params.default_security_charge)))
+                other_charges = Decimal(str(reading_data.get("other_charges", system_params.default_other_charge)))
+                
+                # Get unit and contract using correct related_name
+                unit = Unit.objects.select_related('property').prefetch_related(
+                    Prefetch(
+                        'contracts',
+                        queryset=RentalContract.objects.filter(is_active=True).select_related('customer'),
+                        to_attr='active_contracts'
+                    )
+                ).get(id=unit_id)
+                
+                contract = get_object_or_404(RentalContract, id=contract_id, is_active=True)
+                
+                # Check if receipt already exists
+                exists = Receipt.objects.filter(
+                    contract=contract,
+                    issue_date__year=year,
+                    issue_date__month=month_num,
+                ).exists()
+                
+                if exists:
+                    skipped_existing += 1
+                    continue
+                
+                # Prepare receipt data
+                issue_date = timezone.make_aware(datetime(year, month_num, 1))
+                
+                # Get previous water and electricity readings from unit
+                previous_water_reading = unit.water_meter_reading or Decimal('0.00')
+                previous_electricity_reading = unit.electricity_meter_reading or Decimal('0.00')
+                
+                # Create receipt with custom charges
+                receipt = Receipt.objects.create(
+                    contract=contract,
+                    monthly_rent=contract.rent_amount,
+                    service_charge=service_charge if system_params.has_service_charge else Decimal('0.00'),
+                    security_charge=security_charge if system_params.has_security_charge else Decimal('0.00'),
+                    other_charges=other_charges if system_params.has_other_charges else Decimal('0.00'),
+                    water_bill=water_bill if system_params.has_water_bill else Decimal('0.00'),
+                    electricity_bill=electricity_bill if system_params.has_electricity_bill else Decimal('0.00'),
+                    previous_water_reading=previous_water_reading,
+                    current_water_reading=current_water_reading if system_params.has_water_bill else previous_water_reading,
+                    previous_electricity_reading=previous_electricity_reading,
+                    current_electricity_reading=current_electricity_reading if system_params.has_electricity_bill else previous_electricity_reading,
+                    previous_balance=previous_balance,
+                    issue_date=issue_date,
+                    issued_by=request.user
+                )
+                
+                # Update unit's meter readings
+                if system_params.has_water_bill:
+                    unit.water_meter_reading = current_water_reading
+                if system_params.has_electricity_bill:
+                    unit.electricity_meter_reading = current_electricity_reading
+                unit.save()
+                updated_units += 1
+                
+                created_count += 1
+                created_receipts.append({
+                    "month": f"{year}-{month_num:02d}",
+                    "receipt_number": receipt.receipt_number,
+                    "property_id": property_obj.id,
+                    "property": property_obj.name,
+                    "unit_id": unit.id,
+                    "unit": unit.unit_number,
+                    "customer_id": contract.customer.id,
+                    "customer": str(contract.customer),
+                    "contract_id": contract.id,
+                    "monthly_rent": str(contract.rent_amount),
+                    "previous_balance": str(previous_balance),
+                    "water_bill": str(water_bill),
+                    "electricity_bill": str(electricity_bill),
+                    "service_charge": str(service_charge),
+                    "security_charge": str(security_charge),
+                    "other_charges": str(other_charges),
+                    "total_amount": str(receipt.total_amount),
+                    "balance": str(receipt.balance),
+                    "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
+                    "water_units": str(current_water_reading - previous_water_reading),
+                    "electricity_units": str(current_electricity_reading - previous_electricity_reading),
+                })
+                
+            except Unit.DoesNotExist:
+                errors.append({
+                    "unit_id": reading_data.get("unit_id"),
+                    "error": "Unit not found"
+                })
+                continue
+            except RentalContract.DoesNotExist:
+                errors.append({
+                    "unit_id": reading_data.get("unit_id"),
+                    "error": "Active contract not found"
+                })
+                continue
+            except Exception as e:
+                errors.append({
+                    "unit_id": reading_data.get("unit_id"),
+                    "error": str(e)
+                })
+                continue
+        
+        response_data = {
+            "status": "✅ Receipts Generation Completed",
+            "property_id": property_obj.id,
+            "property": property_obj.name,
+            "month_generated": f"{year}-{month_num:02d}",
+            "summary": {
+                "receipts_created": created_count,
+                "already_existed": skipped_existing,
+                "units_updated": updated_units,
+                "errors": len(errors)
+            },
+            "generated_receipts": created_receipts,
+            "count": created_count
+        }
+        
+        if errors:
+            response_data["errors"] = errors
+        
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
 
 
 class PropertySystemParameterView(APIView):

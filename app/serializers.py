@@ -241,17 +241,38 @@ class PaymentSerializer(serializers.ModelSerializer):
     method_display = serializers.CharField(source="get_method_display", read_only=True)
     customer_name = serializers.SerializerMethodField()
     property_id = serializers.SerializerMethodField()
+    unit_id = serializers.SerializerMethodField()
+    unit_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Payment
-        fields = "__all__"  # includes payment fields
-        # plus the extra read-only fields we defined
+        fields = "__all__"
 
     def get_customer_name(self, obj):
-        return f"{obj.receipt.contract.customer.first_name} {obj.receipt.contract.customer.last_name}"
+        if obj.receipt and obj.receipt.contract.customer:
+            return f"{obj.receipt.contract.customer.first_name} {obj.receipt.contract.customer.last_name}"
+        return None
 
     def get_property_id(self, obj):
-        return obj.receipt.contract.unit.property.id
+        if obj.receipt and obj.receipt.contract.unit:
+            return obj.receipt.contract.unit.property.id
+        elif obj.expense and obj.expense.property:
+            return obj.expense.property.id
+        elif obj.maintenance_request and obj.maintenance_request.unit:
+            return obj.maintenance_request.unit.property.id
+        return None
+
+
+
+    def get_unit_id(self, obj):
+        if obj.receipt and obj.receipt.contract.unit:
+            return obj.receipt.contract.unit.id
+        return None
+
+    def get_unit_name(self, obj):
+        if obj.receipt and obj.receipt.contract.unit:
+            return obj.receipt.contract.unit.unit_number
+        return None
 
 
 # =================================================================

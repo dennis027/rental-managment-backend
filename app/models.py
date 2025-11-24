@@ -287,9 +287,19 @@ class Receipt(models.Model):
         """Balance remaining for this single receipt."""
         return self.total_amount - self.amount_paid
 
-
 class Payment(models.Model):
-    receipt = models.ForeignKey("Receipt", on_delete=models.CASCADE, related_name="payments")
+    INCOME = "IN"
+    EXPENSE = "OUT"
+    
+    PAYMENT_TYPES = [
+        (INCOME, "Incoming"),
+        (EXPENSE, "Outgoing"),
+    ]
+
+    receipt = models.ForeignKey("Receipt", on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
+    expense = models.ForeignKey("Expense", on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
+    maintenance_request = models.ForeignKey("MaintenanceRequest", on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
+
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_date = models.DateField(auto_now_add=True)
     method = models.CharField(
@@ -301,21 +311,30 @@ class Payment(models.Model):
         ],
         default="cash"
     )
+    type = models.CharField(max_length=3, choices=PAYMENT_TYPES, default=INCOME)
     reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    @property
+    def property_id(self):
+        if self.type == self.EXPENSE:
+            if self.expense:
+                return self.expense.property.id
+            if self.maintenance_request:
+                return self.maintenance_request.unit.property.id
+        return None
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
 
-        # Update receipt totals
-        self.receipt.amount_paid += self.amount
-        self.receipt.save(update_fields=["amount_paid"])
-        self.receipt.update_status()
-
-        # Update unit balance
-        unit = self.receipt.contract.unit
-        unit.recalculate_balance()
+        if self.type == self.INCOME:
+            if self.receipt:
+                self.receipt.amount_paid += self.amount
+                self.receipt.save(update_fields=["amount_paid"])
+                self.receipt.update_status()
+            if self.receipt:
+                self.receipt.contract.unit.recalculate_balance()
 
 
 class Expense(models.Model):
@@ -382,6 +401,8 @@ class SystemParameter(models.Model):
     default_other_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     electicity_unit_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     water_unit_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    water_deposit_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    electricity_deposit_amount  = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
