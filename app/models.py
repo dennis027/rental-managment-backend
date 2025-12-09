@@ -336,6 +336,15 @@ class Payment(models.Model):
             if self.receipt:
                 self.receipt.contract.unit.recalculate_balance()
 
+        elif self.type == self.EXPENSE:  # ✅ Add this
+            if self.expense:
+                self.expense.amount_paid += self.amount
+                self.expense.save(update_fields=["amount_paid", "balance", "payment_status"])
+            
+            if self.maintenance_request:
+                self.maintenance_request.amount_paid += self.amount
+                self.maintenance_request.save(update_fields=["amount_paid", "balance", "payment_status"])
+
 
 class Expense(models.Model):
     property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="expenses")
@@ -344,11 +353,29 @@ class Expense(models.Model):
     expense_date = models.DateField(auto_now_add=True)
     recorded_by = models.ForeignKey("CustomUser", on_delete=models.SET_NULL, null=True, blank=True)
 
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)     # NEW
+    balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)         # NEW
+    payment_status = models.CharField(                                               # NEW
+        max_length=20,
+        choices=[("unpaid", "Unpaid"), ("partial", "Partially Paid"), ("paid", "Fully Paid")],
+        default="unpaid"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def __str__(self):
-        return f"Expense {self.amount} for {self.property.name} ({self.expense_date})"
+    def save(self, *args, **kwargs):
+        # Auto compute balance & payment status
+        self.balance = self.amount - self.amount_paid
+
+        if self.amount_paid == 0:
+            self.payment_status = "unpaid"
+        elif self.amount_paid < self.amount:
+            self.payment_status = "partial"
+        else:
+            self.payment_status = "paid"
+
+        super().save(*args, **kwargs)
 
 
 class MaintenanceRequest(models.Model):
@@ -363,8 +390,28 @@ class MaintenanceRequest(models.Model):
     reported_date = models.DateTimeField(auto_now_add=True)
     resolved_date = models.DateTimeField(null=True, blank=True)
 
-    def __str__(self):
-        return f"Request {self.id} - {self.unit} ({self.status})"
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)           # NEW
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)     # NEW
+    balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)         # NEW
+    payment_status = models.CharField(
+        max_length=20,
+        choices=[("unpaid", "Unpaid"), ("partial", "Partially Paid"), ("paid", "Fully Paid")],
+        default="unpaid"
+    )
+
+    def save(self, *args, **kwargs):
+        self.balance = self.amount - self.amount_paid
+
+        if self.amount_paid == 0:
+            self.payment_status = "unpaid"
+        elif self.amount_paid < self.amount:
+            self.payment_status = "partial"
+        else:
+            self.payment_status = "paid"
+
+        super().save(*args, **kwargs)
+
+
 
 
 class SystemParameter(models.Model):

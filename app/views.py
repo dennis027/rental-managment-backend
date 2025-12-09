@@ -1783,7 +1783,6 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 # ----------------- Models (for expenses) -----------------
-
 class ExpenseListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Expense.objects.all().order_by("-expense_date")
@@ -1796,22 +1795,19 @@ class ExpenseListCreateView(generics.ListCreateAPIView):
 
 
 class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated] 
+    permission_classes = [IsAuthenticated]
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
 
-
-#  ....................maintannance request .......................
 
 class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     queryset = MaintenanceRequest.objects.all().order_by("-reported_date")
     serializer_class = MaintenanceRequestSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = ["description", "status", "unit__name", "customer__name"]
+    search_fields = ["description", "status", "unit__unit_number", "customer__first_name", "customer__last_name"]
 
     def perform_create(self, serializer):
-        # Auto-attach the customer if logged in as customer
         if self.request.user.is_authenticated and hasattr(self.request.user, "customer"):
             serializer.save(customer=self.request.user.customer)
         else:
@@ -1824,16 +1820,12 @@ class MaintenanceRequestDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = MaintenanceRequestSerializer
 
     def perform_update(self, serializer):
-        # If status changes to resolved → set resolved_date
         old_status = self.get_object().status
         new_status = self.request.data.get("status")
         if old_status != "resolved" and new_status == "resolved":
             serializer.save(resolved_date=now())
         else:
             serializer.save()
-
-
-
 
 
 

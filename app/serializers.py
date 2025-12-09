@@ -278,7 +278,6 @@ class PaymentSerializer(serializers.ModelSerializer):
 # =================================================================
 # ------------------------ EXPENSE SERIALIZER ---------------------
 # =================================================================
-
 class ExpenseSerializer(serializers.ModelSerializer):
     property_name = serializers.CharField(source="property.name", read_only=True)
     recorded_by_username = serializers.CharField(source="recorded_by.username", read_only=True)
@@ -288,16 +287,13 @@ class ExpenseSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-# =================================================================
-# ------------------ MAINTENANCE REQUEST SERIALIZER ---------------
-# =================================================================
-
 class MaintenanceRequestSerializer(serializers.ModelSerializer):
     unit_number = serializers.CharField(source='unit.unit_number', read_only=True)
     property_name = serializers.CharField(source='unit.property.name', read_only=True)
     property_id = serializers.IntegerField(source='unit.property.id', read_only=True)
     customer_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    payment_status = serializers.SerializerMethodField()
 
     class Meta:
         model = MaintenanceRequest
@@ -307,6 +303,20 @@ class MaintenanceRequestSerializer(serializers.ModelSerializer):
         if obj.customer:
             return f"{obj.customer.first_name} {obj.customer.last_name}"
         return None
+
+    def get_payment_status(self, obj):
+        if not obj.amount or obj.amount == 0:
+            return "Not Applicable"
+
+        total_paid = getattr(obj, "total_paid", 0)
+
+        if total_paid >= obj.amount:
+            return "Fully Paid"
+
+        if 0 < total_paid < obj.amount:
+            return "Partially Paid"
+
+        return "Unpaid"
 
 # =================================================================
 # ------------------- SYSTEM PARAMETERS SERIALIZER ----------------
