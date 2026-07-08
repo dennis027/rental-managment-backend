@@ -126,7 +126,7 @@ USE_TZ = True
 # ---------------------------------------------------------------------------
 # Static / media (WhiteNoise serves static files in production)
 # ---------------------------------------------------------------------------
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
