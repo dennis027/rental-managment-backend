@@ -32,29 +32,19 @@ ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
 # ---------------------------------------------------------------------------
 # Applications
 # ---------------------------------------------------------------------------
-DJANGO_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    "django.contrib.humanize",
-]
-
-THIRD_PARTY_APPS = [
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',  # Required for static files
+    'corsheaders',
+    'app',
     "rest_framework",
     "rest_framework_simplejwt",
-    "corsheaders",
-    "django_filters",
-    "drf_spectacular",
+    'rest_framework_simplejwt.token_blacklist',
 ]
-
-LOCAL_APPS = [
-    "apps"
-]
-
-INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
