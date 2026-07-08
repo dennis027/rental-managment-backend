@@ -59,7 +59,7 @@ MIDDLEWARE = [
 ]
 
 
-ROOT_URLCONF = "config.urls"
+# ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
     {
@@ -77,8 +77,8 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "config.wsgi.application"
-ASGI_APPLICATION = "config.asgi.application"
+# WSGI_APPLICATION = "config.wsgi.application"
+# ASGI_APPLICATION = "config.asgi.application"
 
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL)
