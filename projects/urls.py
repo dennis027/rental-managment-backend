@@ -16,8 +16,10 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path,include
+from django.http import JsonResponse
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', include('app.urls')),
+    path('api/', include('app.urls')),
+    path("", lambda request: JsonResponse({"status": "ok"})),
 ]
