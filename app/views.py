@@ -1941,7 +1941,6 @@ class ReceiptDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 
-
 class GenerateMonthlyReceiptsView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -1971,6 +1970,15 @@ class GenerateMonthlyReceiptsView(APIView):
         # 🔹 Validate property
         property_obj = get_object_or_404(Property, id=property_id)
         
+        # 🔹 Get system parameters for this property
+        system_params = SystemParameter.objects.filter(property=property_obj).first()
+        
+        if not system_params:
+            return Response(
+                {"error": "❌ System parameters not configured for this property."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
         # 🔹 Get all units for this property
         units = Unit.objects.filter(property=property_obj)
         
@@ -1996,11 +2004,18 @@ class GenerateMonthlyReceiptsView(APIView):
                 skipped_existing += 1
                 continue
             
-            # 🔹 Create receipt
+            # ✅ Get the unit's current outstanding balance
+            previous_balance = unit.balance
+            
+            # 🔹 Create receipt with previous balance and system parameters
             issue_date = timezone.make_aware(datetime(year, month_num, 1))
             receipt = Receipt.objects.create(
                 contract=contract,
                 monthly_rent=contract.rent_amount,
+                previous_balance=previous_balance,  # ✅ Include outstanding debt
+                service_charge=system_params.default_service_charge if system_params.has_service_charge else Decimal('0.00'),
+                security_charge=system_params.default_security_charge if system_params.has_security_charge else Decimal('0.00'),
+                other_charges=system_params.default_other_charge if system_params.has_other_charges else Decimal('0.00'),
                 previous_water_reading=unit.water_meter_reading,
                 previous_electricity_reading=unit.electricity_meter_reading,
                 issue_date=issue_date,
@@ -2011,20 +2026,26 @@ class GenerateMonthlyReceiptsView(APIView):
             created_receipts.append({
                 "month": f"{year}-{month_num:02d}",
                 "receipt_number": receipt.receipt_number,
-                "property_id": property_obj.id,  # 🔹 Added property_id
+                "property_id": property_obj.id,
                 "property": property_obj.name,
-                "unit_id": unit.id,  # 🔹 Added unit_id for reference
+                "unit_id": unit.id,
                 "unit": unit.unit_number,
-                "customer_id": contract.customer.id,  # 🔹 Added customer_id
+                "customer_id": contract.customer.id,
                 "customer": str(contract.customer),
-                "contract_id": contract.id,  # 🔹 Added contract_id
-                "amount": str(contract.rent_amount),
+                "contract_id": contract.id,
+                "monthly_rent": str(contract.rent_amount),
+                "previous_balance": str(previous_balance),  # ✅ Show debt in response
+                "service_charge": str(receipt.service_charge),
+                "security_charge": str(receipt.security_charge),
+                "other_charges": str(receipt.other_charges),
+                "total_amount": str(receipt.total_amount),  # ✅ Total including debt
+                "balance": str(receipt.balance),  # ✅ Current receipt balance
                 "issue_date": receipt.issue_date.strftime("%Y-%m-%d"),
             })
         
         return Response({
             "status": "✅ Receipts Generation Completed",
-            "property_id": property_obj.id,  # 🔹 Added property_id in response
+            "property_id": property_obj.id,
             "property": property_obj.name,
             "month_generated": f"{year}-{month_num:02d}",
             "summary": {
@@ -2035,6 +2056,9 @@ class GenerateMonthlyReceiptsView(APIView):
             },
             "generated_receipts": created_receipts
         }, status=status.HTTP_201_CREATED)
+
+
+
 
 class GetActiveUnitsForPropertyView(APIView):
     permission_classes = [IsAuthenticated]
@@ -2090,7 +2114,6 @@ class GetActiveUnitsForPropertyView(APIView):
             status=status.HTTP_200_OK,
         )
     
-
 class GenerateMonthlyReceiptsWithReadingsView(APIView):
     """
     Generate monthly receipts with meter readings
@@ -2145,7 +2168,10 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
             try:
                 unit_id = reading_data.get("unit_id")
                 contract_id = reading_data.get("contract_id")
-                previous_balance = Decimal(str(reading_data.get("previous_balance", 0)))
+                
+                # ✅ REMOVED: Don't get previous_balance from request
+                # previous_balance = Decimal(str(reading_data.get("previous_balance", 0)))
+                
                 current_water_reading = Decimal(str(reading_data.get("current_water_reading", 0)))
                 current_electricity_reading = Decimal(str(reading_data.get("current_electricity_reading", 0)))
                 water_bill = Decimal(str(reading_data.get("water_bill", 0)))
@@ -2178,6 +2204,9 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
                     skipped_existing += 1
                     continue
                 
+                # ✅ Get the unit's current outstanding balance automatically
+                previous_balance = unit.balance
+                
                 # Prepare receipt data
                 issue_date = timezone.make_aware(datetime(year, month_num, 1))
                 
@@ -2198,7 +2227,7 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
                     current_water_reading=current_water_reading if system_params.has_water_bill else previous_water_reading,
                     previous_electricity_reading=previous_electricity_reading,
                     current_electricity_reading=current_electricity_reading if system_params.has_electricity_bill else previous_electricity_reading,
-                    previous_balance=previous_balance,
+                    previous_balance=previous_balance,  # ✅ Using unit's actual balance
                     issue_date=issue_date,
                     issued_by=request.user
                 )
@@ -2223,7 +2252,7 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
                     "customer": str(contract.customer),
                     "contract_id": contract.id,
                     "monthly_rent": str(contract.rent_amount),
-                    "previous_balance": str(previous_balance),
+                    "previous_balance": str(previous_balance),  # ✅ Shows actual unit debt
                     "water_bill": str(water_bill),
                     "electricity_bill": str(electricity_bill),
                     "service_charge": str(service_charge),
@@ -2266,7 +2295,7 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
                 "units_updated": updated_units,
                 "errors": len(errors)
             },
-            "generated_receipts": created_receipts,
+            "generated_receipts": created_receipts,  
             "count": created_count
         }
         
@@ -2274,8 +2303,6 @@ class GenerateMonthlyReceiptsWithReadingsView(APIView):
             response_data["errors"] = errors
         
         return Response(response_data, status=status.HTTP_201_CREATED)
-
-
 
 class PropertySystemParameterView(APIView):
     permission_classes = [IsAuthenticated]
