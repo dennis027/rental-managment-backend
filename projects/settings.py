@@ -183,20 +183,31 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL")
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# The URL component to use when referring to static files (e.g., /static/main.css)
 STATIC_URL = "/static/"
+
+# Absolute path to the directory where collectstatic will collect static files for deployment
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-STATICFILES_STORAGE = (
-    "whitenoise.storage.CompressedManifestStaticFilesStorage"
-)
+# Additional locations of static files (e.g., project-wide or frontend build directories)
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+]
 
-SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),   # default 60 mins → change as needed
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),     
-    "ROTATE_REFRESH_TOKENS": False,                  
-    "BLACKLIST_AFTER_ROTATION": True,
+# Django 4.2+ Unified Storage Configuration
+# This replaces the deprecated STATICFILES_STORAGE setting and configures WhiteNoise.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "static": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
 }
 
+# Media Files (User-uploaded content)
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 
 # Django example (settings.py if using django-csp)
