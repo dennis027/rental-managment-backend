@@ -83,27 +83,25 @@ TEMPLATES = [
 # ---------------------------------------------------------------------------
 # Database (PostgreSQL)
 # ---------------------------------------------------------------------------
-if os.getenv("DATABASE_URL"):
-    # Production
-    DATABASES = {
-        "default": dj_database_url.parse(
-            os.getenv("DATABASE_URL"),
-            conn_max_age=600,
-        )
-    }
-else:
-    # Local development
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("DB_NAME", "portfolio_db"),
-            "USER": os.getenv("DB_USER", "portfolio_user"),
-            "PASSWORD": os.getenv("DB_PASSWORD", "portfolio_pass"),
-            "HOST": os.getenv("DB_HOST", "localhost"),
-            "PORT": os.getenv("DB_PORT", "5432"),
-            "CONN_MAX_AGE": 60,
-        }
-    }
+# if os.getenv("DATABASE_URL"):
+DATABASES = {
+    "default": dj_database_url.parse(
+        os.getenv("DATABASE_URL"),
+        conn_max_age=600,
+        ssl_require=True,
+    )
+}
+# else:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "django.db.backends.postgresql",
+#             "NAME": os.getenv("DB_NAME"),
+#             "USER": os.getenv("DB_USER"),
+#             "PASSWORD": os.getenv("DB_PASSWORD"),
+#             "HOST": os.getenv("DB_HOST"),
+#             "PORT": os.getenv("DB_PORT", "5432"),
+#         }
+#     }
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -262,3 +260,5 @@ LOGGING = {
     },
 }
 os.makedirs(BASE_DIR / "logs", exist_ok=True)
+
+AUTH_USER_MODEL = 'app.CustomUser'

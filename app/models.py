@@ -2,6 +2,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models, IntegrityError, DatabaseError
 import uuid
 from django.utils import timezone
+from django.conf import settings
 
 class CustomUser(AbstractUser):
     email = models.EmailField(unique=True, null=True, blank=True)
@@ -180,7 +181,7 @@ class Receipt(models.Model):
         related_name="receipts"
     )
     issued_by = models.ForeignKey(
-        CustomUser,
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -351,8 +352,12 @@ class Expense(models.Model):
     description = models.TextField()
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     expense_date = models.DateField(auto_now_add=True)
-    recorded_by = models.ForeignKey("CustomUser", on_delete=models.SET_NULL, null=True, blank=True)
-
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)     # NEW
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)         # NEW
     payment_status = models.CharField(                                               # NEW
